@@ -24,7 +24,7 @@ const ARTICLE_COLUMNS = [
 ];
 
 export async function createDatabase(articles) {
-  const SQL = await initSqlJs({ locateFile: () => "/sql-wasm.wasm" });
+  const SQL = await initSqlJs({ locateFile: () => `${import.meta.env.BASE_URL}sql-wasm.wasm` });
   const db = new SQL.Database();
 
   db.run(`
