@@ -1,0 +1,365 @@
+import JSZip from "jszip";
+import { createDatabase, exportCsv, exportExcel } from "./database.js";
+import { extractPdfText } from "./pdf.js";
+import { parseNexisPdfText } from "./parser.js";
+import "./styles.css";
+
+const state = {
+  imports: [],
+  articles: [],
+  busy: false
+};
+
+document.querySelector("#app").innerHTML = `
+  <main class="shell">
+    <section class="workspace">
+      <header class="topbar">
+        <div>
+          <h1>nu2db</h1>
+          <p>Convert Nexis Uni exports downloaded as PDF documents inside ZIP files into local data files.</p>
+        </div>
+        <div class="actions">
+          <button id="downloadSqlite" class="primary" disabled>Download SQLite</button>
+          <button id="downloadExcel" disabled>Download Excel</button>
+          <button id="downloadCsv" disabled>Download CSV</button>
+        </div>
+      </header>
+
+      <label id="dropzone" class="dropzone">
+        <input id="fileInput" type="file" accept=".zip,.pdf,application/pdf,application/zip" multiple />
+        <span class="drop-title">Drop Nexis Uni PDF export ZIPs</span>
+        <span class="drop-subtitle">Add as many Nexis export ZIPs as needed. Each PDF is parsed locally and merged into one dataset.</span>
+      </label>
+
+      <section id="progressPanel" class="progress-panel" aria-live="polite" hidden>
+        <div class="progress-head">
+          <strong id="progressLabel">Working</strong>
+          <span id="progressPercent">0%</span>
+        </div>
+        <div class="progress-track">
+          <div id="progressFill" class="progress-fill"></div>
+        </div>
+      </section>
+
+      <section class="status-grid">
+        <div>
+          <span class="metric" id="articleCount">0</span>
+          <span class="label">articles</span>
+        </div>
+        <div>
+          <span class="metric" id="fileCount">0</span>
+          <span class="label">PDFs parsed</span>
+        </div>
+        <div>
+          <span class="metric" id="jobCount">0</span>
+          <span class="label">jobs</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Imports</h2>
+          <button id="clearAll" class="ghost" disabled>Clear</button>
+        </div>
+        <div id="log" class="log empty">No files imported yet.</div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Articles</h2>
+          <input id="filterInput" type="search" placeholder="Filter title, byline, date, body" disabled />
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Title</th>
+                <th>Date</th>
+                <th>Section</th>
+                <th>Byline</th>
+                <th>Text</th>
+              </tr>
+            </thead>
+            <tbody id="articleRows">
+              <tr><td colspan="6" class="muted">Import files to populate rows.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+  </main>
+`;
+
+const fileInput = document.querySelector("#fileInput");
+const dropzone = document.querySelector("#dropzone");
+const log = document.querySelector("#log");
+const filterInput = document.querySelector("#filterInput");
+const downloadSqlite = document.querySelector("#downloadSqlite");
+const downloadExcel = document.querySelector("#downloadExcel");
+const downloadCsv = document.querySelector("#downloadCsv");
+const clearAll = document.querySelector("#clearAll");
+const progressPanel = document.querySelector("#progressPanel");
+const progressLabel = document.querySelector("#progressLabel");
+const progressPercent = document.querySelector("#progressPercent");
+const progressFill = document.querySelector("#progressFill");
+
+fileInput.addEventListener("change", () => importFiles([...fileInput.files]));
+dropzone.addEventListener("dragover", (event) => {
+  event.preventDefault();
+  dropzone.classList.add("dragging");
+});
+dropzone.addEventListener("dragleave", () => dropzone.classList.remove("dragging"));
+dropzone.addEventListener("drop", (event) => {
+  event.preventDefault();
+  dropzone.classList.remove("dragging");
+  importFiles([...event.dataTransfer.files]);
+});
+filterInput.addEventListener("input", renderArticles);
+clearAll.addEventListener("click", () => {
+  state.imports = [];
+  state.articles = [];
+  render();
+});
+downloadSqlite.addEventListener("click", async () => {
+  setBusy(true, "Building SQLite database...");
+  setProgress("Building SQLite database", 15);
+  try {
+    const bytes = await createDatabase(state.articles);
+    setProgress("SQLite database ready", 100);
+    downloadBlob(bytes, "nu2db.sqlite", "application/vnd.sqlite3");
+  } finally {
+    setBusy(false);
+  }
+});
+downloadCsv.addEventListener("click", () => {
+  setProgress("Preparing CSV export", 100);
+  downloadBlob(exportCsv(state.articles), "nu2db.csv", "text/csv;charset=utf-8");
+  hideProgressSoon();
+});
+downloadExcel.addEventListener("click", () => {
+  setProgress("Preparing Excel export", 25);
+  const bytes = exportExcel(state.articles);
+  setProgress("Excel workbook ready", 100);
+  downloadBlob(
+    bytes,
+    "nu2db.xlsx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  );
+  hideProgressSoon();
+});
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js"));
+}
+
+async function importFiles(files) {
+  if (!files.length || state.busy) return;
+  setBusy(true, "Reading files...");
+  setProgress("Reading selected files", 1);
+  try {
+    for (let index = 0; index < files.length; index += 1) {
+      setProgress(`Reading ${files[index].name}`, Math.floor((index / files.length) * 10));
+      await importOne(files[index]);
+    }
+    setProgress("Import complete", 100);
+    hideProgressSoon();
+  } catch (error) {
+    state.imports.push({ name: "Import error", detail: error.message, count: 0, status: "error" });
+  } finally {
+    setBusy(false);
+    fileInput.value = "";
+    render();
+  }
+}
+
+async function importOne(file) {
+  const lower = file.name.toLowerCase();
+  if (lower.endsWith(".zip")) {
+    const zip = await JSZip.loadAsync(file);
+    const pdfEntries = Object.values(zip.files).filter(
+      (entry) => !entry.dir && entry.name.toLowerCase().endsWith(".pdf")
+    );
+    if (!pdfEntries.length) {
+      state.imports.push({ name: file.name, detail: "No PDFs found", count: 0, status: "error" });
+      return;
+    }
+    for (const entry of pdfEntries) {
+      const bytes = await entry.async("uint8array");
+      await importPdf(bytes, file.name, entry.name);
+    }
+    return;
+  }
+
+  if (lower.endsWith(".pdf") || file.type === "application/pdf") {
+    await importPdf(new Uint8Array(await file.arrayBuffer()), "", file.name);
+    return;
+  }
+
+  state.imports.push({ name: file.name, detail: "Skipped non-PDF export", count: 0, status: "error" });
+}
+
+async function importPdf(bytes, archiveName, pdfName) {
+  const sourceHash = await sha256(bytes);
+  const existing = state.imports.find((item) => item.sourceHash === sourceHash);
+  if (existing) {
+    state.imports.push({ name: archiveName || pdfName, detail: "Skipped duplicate PDF", count: 0, status: "warn" });
+    return;
+  }
+
+  updateLog(`Extracting ${archiveName || pdfName}...`);
+  setProgress(`Extracting ${archiveName || pdfName}`, 10);
+  const text = await extractPdfText(bytes, ({ pageNumber, pageCount }) => {
+    const pct = 10 + Math.floor((pageNumber / pageCount) * 75);
+    setProgress(`Extracting ${archiveName || pdfName}: page ${pageNumber} of ${pageCount}`, pct);
+    if (pageNumber === 1 || pageNumber % 100 === 0 || pageNumber === pageCount) {
+      updateLog(`Extracting ${archiveName || pdfName}: page ${pageNumber} of ${pageCount}`);
+    }
+  });
+  setProgress(`Parsing ${archiveName || pdfName}`, 90);
+  const parsed = parseNexisPdfText(text, { archiveName, pdfName, sha256: sourceHash });
+  for (const article of parsed) {
+    article.body_sha256 = await sha256(new TextEncoder().encode(article.body));
+  }
+  state.articles.push(...parsed);
+  state.imports.push({
+    name: archiveName || pdfName,
+    detail: pdfName,
+    count: parsed.length,
+    sourceHash,
+    status: parsed.length ? "ok" : "error"
+  });
+  render();
+}
+
+function render() {
+  const articleCount = state.articles.length;
+  document.querySelector("#articleCount").textContent = articleCount.toLocaleString();
+  document.querySelector("#fileCount").textContent = state.imports
+    .filter((item) => item.status === "ok")
+    .length.toLocaleString();
+  document.querySelector("#jobCount").textContent = new Set(state.articles.map((article) => article.job_number).filter(Boolean)).size.toLocaleString();
+
+  downloadSqlite.disabled = !articleCount || state.busy;
+  downloadExcel.disabled = !articleCount || state.busy;
+  downloadCsv.disabled = !articleCount || state.busy;
+  clearAll.disabled = (!articleCount && !state.imports.length) || state.busy;
+  filterInput.disabled = !articleCount;
+
+  renderImports();
+  renderArticles();
+}
+
+function renderImports() {
+  if (!state.imports.length) {
+    log.className = "log empty";
+    log.textContent = "No files imported yet.";
+    return;
+  }
+
+  log.className = "log";
+  log.innerHTML = state.imports
+    .map(
+      (item) => `
+        <div class="log-row ${item.status}">
+          <span>${escapeHtml(item.name)}</span>
+          <span>${escapeHtml(item.detail || "")}</span>
+          <strong>${item.count.toLocaleString()} rows</strong>
+        </div>
+      `
+    )
+    .join("");
+}
+
+function renderArticles() {
+  const query = filterInput.value.trim().toLowerCase();
+  const rows = state.articles
+    .map((article, index) => ({ article, index }))
+    .filter(({ article }) => {
+      if (!query) return true;
+      return [article.title, article.publication_date, article.section, article.byline, article.body]
+        .join(" ")
+        .toLowerCase()
+        .includes(query);
+    });
+
+  const body = document.querySelector("#articleRows");
+  if (!state.articles.length) {
+    body.innerHTML = `<tr><td colspan="6" class="muted">Import files to populate rows.</td></tr>`;
+    return;
+  }
+  if (!rows.length) {
+    body.innerHTML = `<tr><td colspan="6" class="muted">No matching articles.</td></tr>`;
+    return;
+  }
+
+  body.innerHTML = rows
+    .map(
+      ({ article, index }) => `
+      <tr>
+        <td>${index + 1}</td>
+        <td>${escapeHtml(article.title)}</td>
+        <td>${escapeHtml(article.publication_date || article.load_date)}</td>
+        <td>${escapeHtml(article.section)}</td>
+        <td>${escapeHtml(article.byline)}</td>
+        <td>${escapeHtml(previewText(article.body))}</td>
+      </tr>
+    `
+    )
+    .join("");
+}
+
+function previewText(text) {
+  const compact = String(text || "").replace(/\s+/g, " ").trim();
+  if (compact.length <= 220) return compact;
+  return `${compact.slice(0, 100)} [...] ${compact.slice(-100)}`;
+}
+
+function updateLog(message) {
+  log.className = "log empty";
+  log.textContent = message;
+}
+
+function setBusy(busy, message = "") {
+  state.busy = busy;
+  document.body.classList.toggle("busy", busy);
+  if (message) updateLog(message);
+  render();
+}
+
+function setProgress(label, percent) {
+  const clamped = Math.max(0, Math.min(100, Math.round(percent)));
+  progressPanel.hidden = false;
+  progressLabel.textContent = label;
+  progressPercent.textContent = `${clamped}%`;
+  progressFill.style.width = `${clamped}%`;
+}
+
+function hideProgressSoon() {
+  window.setTimeout(() => {
+    if (!state.busy) progressPanel.hidden = true;
+  }, 1200);
+}
+
+async function sha256(bytes) {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function downloadBlob(content, name, type) {
+  const blob = content instanceof Uint8Array ? new Blob([content], { type }) : new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}

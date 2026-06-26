@@ -1,0 +1,16 @@
+{
+  "name": "nu2db",
+  "short_name": "nu2db",
+  "description": "Parse Nexis Uni PDF exports into an offline SQLite database.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f5f3ee",
+  "theme_color": "#26352f",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
