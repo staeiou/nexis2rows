@@ -251,7 +251,7 @@ h2 {
   cursor: grab;
   display: grid;
   gap: 10px;
-  grid-template-columns: 24px 34px minmax(0, 1fr) auto auto;
+  grid-template-columns: 24px 34px minmax(160px, 1.1fr) minmax(180px, 1fr) auto auto;
   min-height: 46px;
 }
 
@@ -277,6 +277,13 @@ h2 {
 }
 
 .pending-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.pending-detail {
+  color: #5c625e;
+  font-size: 13px;
   min-width: 0;
   overflow-wrap: anywhere;
 }
@@ -394,6 +401,7 @@ tbody tr:hover {
     padding: 8px 0;
   }
 
+  .pending-detail,
   .pending-kind,
   .remove-pending {
     grid-column: 3;

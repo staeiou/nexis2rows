@@ -1,17 +1,31 @@
 const PAGE_HEADER_RE = /^\s*Page\s+\d+\s+of\s+\d+\s*$/i;
 const FOOTER_RE = /\|\s*About LexisNexis\s*\|\s*Privacy Policy\s*\|\s*Terms & Conditions\s*\|\s*Copyright/i;
+const ADVANCE_LINK_RE = /^https?:\/\/advance\.lexis\.com\/api\/document/i;
 
-export function parseNexisPdfText(text, source = {}) {
-  const normalized = normalizeText(text);
-  const header = parseDeliveryHeader(normalized);
-  const bodyStart = findBodyStart(normalized);
-  const articleText = bodyStart >= 0 ? normalized.slice(bodyStart) : normalized;
-  const chunks = articleText
-    .split(/\n\s*End of Document\s*(?:\n|\f|$)/i)
-    .map((chunk) => chunk.trim())
-    .filter((chunk) => /^Page\s+1\s+of\s+\d+/im.test(chunk) && /\n\s*Body\s*\n/i.test(chunk));
+export function parseNexisPdfText(text, source = {}, pageData = null) {
+  const pages = Array.isArray(pageData) ? pageData : null;
+  const pageEntries = buildPageEntries(text, pages);
+  const header = parseDeliveryHeader(pageEntries[0]?.text || "");
+  const articles = [];
+  let currentArticle = null;
 
-  return chunks.map((chunk, index) => parseArticle(chunk, index + 1, header, source));
+  for (const page of pageEntries) {
+    if (isArticleStartPage(page.text)) {
+      if (currentArticle) articles.push(currentArticle);
+      currentArticle = { pages: [page] };
+    } else if (currentArticle) {
+      currentArticle.pages.push(page);
+    }
+
+    if (currentArticle && /End of Document/i.test(page.text)) {
+      articles.push(currentArticle);
+      currentArticle = null;
+    }
+  }
+
+  if (currentArticle) articles.push(currentArticle);
+
+  return articles.map((article, index) => parseArticle(article, index + 1, header, source));
 }
 
 export function parseDeliveryHeader(text) {
@@ -24,13 +38,16 @@ export function parseDeliveryHeader(text) {
   };
 }
 
-function parseArticle(chunk, ordinal, header, source) {
+function parseArticle(article, ordinal, header, source) {
+  const firstPage = article.pages[0] || { text: "", annotations: [] };
+  const chunk = article.pages.map((page) => page.text).join("\n\f\n");
   const lines = cleanArticleLines(chunk.split(/\n/));
+  const firstPageLines = cleanArticleLines(firstPage.text.split(/\n/));
   const bodyIndex = lines.findIndex((line) => line.trim() === "Body");
   const loadDateIndex = findLastIndex(lines, (line) => /^Load-Date:\s*/i.test(line));
   const copyrightIndex = lines.findIndex((line) => /^Copyright\s+\d{4}\s+/i.test(line));
 
-  const title = compact(lines[copyrightIndex - 3] || lines[0] || "");
+  const title = extractTitle(firstPageLines, firstPage.annotations);
   const publication = compact(lines[copyrightIndex - 2] || "");
   const publication_date = compact(lines[copyrightIndex - 1] || "");
   const metadataLines = lines.slice(copyrightIndex + 1, bodyIndex);
@@ -39,12 +56,14 @@ function parseArticle(chunk, ordinal, header, source) {
   const metadata = parseMetadata(metadataLines);
   const body = cleanBody(bodyLines);
   const loadDate = loadDateIndex >= 0 ? lines[loadDateIndex].replace(/^Load-Date:\s*/i, "").trim() : "";
+  const nexisLink = extractNexisLink(firstPage.annotations);
 
   return {
     id: null,
     source_archive: source.archiveName || "",
     source_pdf: source.pdfName || "",
     source_sha256: source.sha256 || "",
+    nexis_link: nexisLink,
     source_article_ordinal: ordinal,
     delivery_date: header.delivery_date || "",
     job_number: header.job_number || "",
@@ -56,6 +75,7 @@ function parseArticle(chunk, ordinal, header, source) {
     section: metadata.Section || "",
     length: metadata.Length || "",
     byline: metadata.Byline || "",
+    dateline: metadata.Dateline || "",
     load_date: loadDate,
     body,
     abstract: extractAbstract(body),
@@ -70,11 +90,6 @@ function normalizeText(text) {
     .replace(/\u00a0/g, " ")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{4,}/g, "\n\n\n");
-}
-
-function findBodyStart(text) {
-  const match = /\f?\s*Page\s+1\s+of\s+\d+\s*\n/i.exec(text);
-  return match ? match.index : -1;
 }
 
 function cleanArticleLines(lines) {
@@ -98,6 +113,69 @@ function parseMetadata(lines) {
     if (match) metadata[match[1].trim()] = match[2].trim();
   }
   return metadata;
+}
+
+function buildPageEntries(text, pages) {
+  if (Array.isArray(pages) && pages.length) {
+    return pages.map((page, index) => ({
+      pageNumber: page.pageNumber ?? index + 1,
+      text: normalizeText(page.text || ""),
+      annotations: Array.isArray(page.annotations) ? page.annotations : []
+    }));
+  }
+
+  return String(text || "")
+    .split(/\n\f\n/)
+    .map((pageText, index) => ({
+      pageNumber: index + 1,
+      text: normalizeText(pageText),
+      annotations: []
+    }));
+}
+
+function isArticleStartPage(text) {
+  return /^Page\s+1\s+of\s+\d+/im.test(text) && /\n\s*Body\s*\n/i.test(text);
+}
+
+function extractTitle(lines, annotations) {
+  const titleAnnotations = (annotations || [])
+    .filter((annotation) => ADVANCE_LINK_RE.test(annotation.url || "") && compact(annotation.overlaidText || ""))
+    .sort((a, b) => {
+      const ay = Array.isArray(a.rect) ? a.rect[3] || 0 : 0;
+      const by = Array.isArray(b.rect) ? b.rect[3] || 0 : 0;
+      if (by !== ay) return by - ay;
+      const ax = Array.isArray(a.rect) ? a.rect[0] || 0 : 0;
+      const bx = Array.isArray(b.rect) ? b.rect[0] || 0 : 0;
+      return ax - bx;
+    });
+  const titleBandTop = titleAnnotations.length ? (Array.isArray(titleAnnotations[0].rect) ? titleAnnotations[0].rect[3] || 0 : 0) : 0;
+  const titleFromLinks = compact(
+    titleAnnotations
+      .filter((annotation) => {
+        const top = Array.isArray(annotation.rect) ? annotation.rect[3] || 0 : 0;
+        return top >= titleBandTop - 72;
+      })
+      .map((annotation) => compact(annotation.overlaidText || ""))
+      .join(" ")
+  );
+
+  if (titleFromLinks) return titleFromLinks;
+  return compact(lines[0] || "");
+}
+
+function extractNexisLink(annotations) {
+  const matches = (annotations || [])
+    .filter((annotation) => ADVANCE_LINK_RE.test(annotation.url || ""))
+    .sort((a, b) => {
+      const ay = Array.isArray(a.rect) ? a.rect[3] || 0 : 0;
+      const by = Array.isArray(b.rect) ? b.rect[3] || 0 : 0;
+      if (by !== ay) return by - ay;
+      const ax = Array.isArray(a.rect) ? a.rect[0] || 0 : 0;
+      const bx = Array.isArray(b.rect) ? b.rect[0] || 0 : 0;
+      return ax - bx;
+    });
+
+  return matches[0]?.url || "";
 }
 
 function cleanBody(lines) {

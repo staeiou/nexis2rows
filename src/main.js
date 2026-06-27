@@ -1,6 +1,6 @@
 import JSZip from "jszip";
 import { createDatabase, exportCsv, exportExcel } from "./database.js";
-import { extractPdfText } from "./pdf.js";
+import { extractPdfPages } from "./pdf.js";
 import { parseNexisPdfText } from "./parser.js";
 import "./styles.css";
 
@@ -10,6 +10,7 @@ const state = {
   pendingFiles: [],
   busy: false
 };
+let pendingId = 1;
 
 document.querySelector("#app").innerHTML = `
   <main class="shell">
@@ -29,12 +30,12 @@ document.querySelector("#app").innerHTML = `
       <label id="dropzone" class="dropzone">
         <input id="fileInput" type="file" accept=".zip,.pdf,application/pdf,application/zip" multiple />
         <span class="drop-title">Drop Nexis Uni PDFs or ZIPs</span>
-        <span class="drop-subtitle">Add as many Nexis PDF exports as needed, then drag pending files into the order to parse them.</span>
+        <span class="drop-subtitle">Add bare PDFs or ZIPs. ZIPs expand into pending PDFs that can be dragged into the exact import order.</span>
       </label>
 
       <section id="pendingPanel" class="panel pending-panel" hidden>
         <div class="panel-head">
-          <h2>Pending files</h2>
+          <h2>Pending PDFs</h2>
           <div class="pending-actions">
             <button id="clearPending" class="ghost" disabled>Clear pending</button>
             <button id="importPending" class="primary" disabled>Import in this order</button>
@@ -79,7 +80,7 @@ document.querySelector("#app").innerHTML = `
       <section class="panel">
         <div class="panel-head">
           <h2>Articles</h2>
-          <input id="filterInput" type="search" placeholder="Filter title, byline, date, body" disabled />
+          <input id="filterInput" type="search" placeholder="Filter title, byline, date, dateline, body" disabled />
         </div>
         <div class="table-wrap">
           <table>
@@ -90,11 +91,12 @@ document.querySelector("#app").innerHTML = `
                 <th>Date</th>
                 <th>Section</th>
                 <th>Byline</th>
+                <th>Dateline</th>
                 <th>Text</th>
               </tr>
             </thead>
             <tbody id="articleRows">
-              <tr><td colspan="6" class="muted">Import files to populate rows.</td></tr>
+              <tr><td colspan="7" class="muted">Import files to populate rows.</td></tr>
             </tbody>
           </table>
         </div>
@@ -195,44 +197,78 @@ async function importFiles(files) {
   }
 }
 
-function stageFiles(files) {
+async function stageFiles(files) {
   if (!files.length || state.busy) return;
-  state.pendingFiles.push(...files);
-  fileInput.value = "";
-  render();
+  setBusy(true, "Reading selected files...");
+  setProgress("Reading selected files", 1);
+  try {
+    for (let index = 0; index < files.length; index += 1) {
+      setProgress(`Reading ${files[index].name}`, Math.floor((index / files.length) * 100));
+      await stageOne(files[index]);
+    }
+    setProgress("Files ready to import", 100);
+    hideProgressSoon();
+  } catch (error) {
+    state.imports.push({ name: "Import error", detail: error.message, count: 0, status: "error" });
+  } finally {
+    setBusy(false);
+    fileInput.value = "";
+    render();
+  }
+}
+
+async function stageOne(file) {
+  const lower = file.name.toLowerCase();
+  if (lower.endsWith(".zip")) {
+    const zip = await JSZip.loadAsync(file);
+    const pdfEntries = Object.values(zip.files)
+      .filter((entry) => !entry.dir && entry.name.toLowerCase().endsWith(".pdf"))
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+
+    if (!pdfEntries.length) {
+      state.imports.push({ name: file.name, detail: "No PDFs found", count: 0, status: "error" });
+      return;
+    }
+
+    for (const entry of pdfEntries) {
+      state.pendingFiles.push({
+        id: pendingId++,
+        name: file.name,
+        detail: entry.name,
+        kind: "PDF",
+        archiveName: file.name,
+        pdfName: entry.name,
+        getBytes: () => entry.async("uint8array")
+      });
+    }
+    return;
+  }
+
+  if (lower.endsWith(".pdf") || file.type === "application/pdf") {
+    state.pendingFiles.push({
+      id: pendingId++,
+      name: file.name,
+      detail: "Bare PDF",
+      kind: "PDF",
+      archiveName: "",
+      pdfName: file.name,
+      getBytes: async () => new Uint8Array(await file.arrayBuffer())
+    });
+    return;
+  }
+
+  state.imports.push({ name: file.name, detail: "Skipped non-PDF export", count: 0, status: "error" });
 }
 
 async function importPendingFiles() {
-  const files = [...state.pendingFiles];
+  const files = getPendingOrderFromDom();
   state.pendingFiles = [];
   render();
   await importFiles(files);
 }
 
 async function importOne(file) {
-  const lower = file.name.toLowerCase();
-  if (lower.endsWith(".zip")) {
-    const zip = await JSZip.loadAsync(file);
-    const pdfEntries = Object.values(zip.files).filter(
-      (entry) => !entry.dir && entry.name.toLowerCase().endsWith(".pdf")
-    );
-    if (!pdfEntries.length) {
-      state.imports.push({ name: file.name, detail: "No PDFs found", count: 0, status: "error" });
-      return;
-    }
-    for (const entry of pdfEntries) {
-      const bytes = await entry.async("uint8array");
-      await importPdf(bytes, file.name, entry.name);
-    }
-    return;
-  }
-
-  if (lower.endsWith(".pdf") || file.type === "application/pdf") {
-    await importPdf(new Uint8Array(await file.arrayBuffer()), "", file.name);
-    return;
-  }
-
-  state.imports.push({ name: file.name, detail: "Skipped non-PDF export", count: 0, status: "error" });
+  await importPdf(await file.getBytes(), file.archiveName, file.pdfName);
 }
 
 async function importPdf(bytes, archiveName, pdfName) {
@@ -245,15 +281,16 @@ async function importPdf(bytes, archiveName, pdfName) {
 
   updateLog(`Extracting ${archiveName || pdfName}...`);
   setProgress(`Extracting ${archiveName || pdfName}`, 10);
-  const text = await extractPdfText(bytes, ({ pageNumber, pageCount }) => {
+  const pages = await extractPdfPages(bytes, ({ pageNumber, pageCount }) => {
     const pct = 10 + Math.floor((pageNumber / pageCount) * 75);
     setProgress(`Extracting ${archiveName || pdfName}: page ${pageNumber} of ${pageCount}`, pct);
     if (pageNumber === 1 || pageNumber % 100 === 0 || pageNumber === pageCount) {
       updateLog(`Extracting ${archiveName || pdfName}: page ${pageNumber} of ${pageCount}`);
     }
   });
+  const text = pages.map((page) => page.text).join("\n\f\n");
   setProgress(`Parsing ${archiveName || pdfName}`, 90);
-  const parsed = parseNexisPdfText(text, { archiveName, pdfName, sha256: sourceHash });
+  const parsed = parseNexisPdfText(text, { archiveName, pdfName, sha256: sourceHash }, pages);
   for (const article of parsed) {
     article.body_sha256 = await sha256(new TextEncoder().encode(article.body));
   }
@@ -299,11 +336,12 @@ function renderPendingFiles() {
   pendingList.innerHTML = state.pendingFiles
     .map(
       (file, index) => `
-        <div class="pending-row" draggable="${!state.busy}" data-index="${index}">
+        <div class="pending-row" draggable="${!state.busy}" data-index="${index}" data-id="${file.id}">
           <span class="drag-handle" aria-hidden="true">::</span>
           <span class="pending-index">${index + 1}</span>
           <span class="pending-name">${escapeHtml(file.name)}</span>
-          <span class="pending-kind">${escapeHtml(fileKind(file))}</span>
+          <span class="pending-detail">${escapeHtml(file.detail)}</span>
+          <span class="pending-kind">${escapeHtml(file.kind)}</span>
           <button class="ghost remove-pending" data-index="${index}" ${state.busy ? "disabled" : ""}>Remove</button>
         </div>
       `
@@ -344,11 +382,12 @@ function movePendingFile(from, to) {
   render();
 }
 
-function fileKind(file) {
-  const lower = file.name.toLowerCase();
-  if (lower.endsWith(".zip")) return "ZIP";
-  if (lower.endsWith(".pdf") || file.type === "application/pdf") return "PDF";
-  return "Skipped";
+function getPendingOrderFromDom() {
+  const byId = new Map(state.pendingFiles.map((file) => [String(file.id), file]));
+  const ordered = [...pendingList.querySelectorAll(".pending-row")]
+    .map((row) => byId.get(row.dataset.id))
+    .filter(Boolean);
+  return ordered.length === state.pendingFiles.length ? ordered : [...state.pendingFiles];
 }
 
 function renderImports() {
@@ -378,10 +417,11 @@ function renderArticles() {
     .map((article, index) => ({ article, index }))
     .filter(({ article }) => {
       if (!query) return true;
-      return [article.title, article.publication_date, article.section, article.byline, article.body]
-        .join(" ")
-        .toLowerCase()
-        .includes(query);
+    return [article.title, article.publication_date, article.section, article.byline, article.body]
+      .concat(article.dateline || "")
+      .join(" ")
+      .toLowerCase()
+      .includes(query);
     });
 
   const body = document.querySelector("#articleRows");
@@ -400,11 +440,12 @@ function renderArticles() {
       <tr>
         <td>${index + 1}</td>
         <td>${escapeHtml(article.title)}</td>
-        <td>${escapeHtml(article.publication_date || article.load_date)}</td>
-        <td>${escapeHtml(article.section)}</td>
-        <td>${escapeHtml(article.byline)}</td>
-        <td>${escapeHtml(previewText(article.body))}</td>
-      </tr>
+      <td>${escapeHtml(article.publication_date || article.load_date)}</td>
+      <td>${escapeHtml(article.section)}</td>
+      <td>${escapeHtml(article.byline)}</td>
+      <td>${escapeHtml(article.dateline)}</td>
+      <td>${escapeHtml(previewText(article.body))}</td>
+    </tr>
     `
     )
     .join("");

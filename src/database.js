@@ -5,6 +5,7 @@ const ARTICLE_COLUMNS = [
   "source_archive",
   "source_pdf",
   "source_sha256",
+  "nexis_link",
   "source_article_ordinal",
   "delivery_date",
   "job_number",
@@ -16,6 +17,7 @@ const ARTICLE_COLUMNS = [
   "section",
   "length",
   "byline",
+  "dateline",
   "load_date",
   "body",
   "abstract",
@@ -24,7 +26,7 @@ const ARTICLE_COLUMNS = [
 ];
 
 export async function createDatabase(articles) {
-  const SQL = await initSqlJs({ locateFile: () => `${import.meta.env.BASE_URL}sql-wasm.wasm` });
+  const SQL = await initSqlJs({ locateFile: locateSqlWasm });
   const db = new SQL.Database();
 
   db.run(`
@@ -33,6 +35,7 @@ export async function createDatabase(articles) {
       source_archive TEXT,
       source_pdf TEXT,
       source_sha256 TEXT,
+      nexis_link TEXT,
       source_article_ordinal INTEGER,
       delivery_date TEXT,
       job_number TEXT,
@@ -44,6 +47,7 @@ export async function createDatabase(articles) {
       section TEXT,
       length TEXT,
       byline TEXT,
+      dateline TEXT,
       load_date TEXT,
       body TEXT,
       abstract TEXT,
@@ -105,4 +109,11 @@ function csvCell(value) {
   const string = String(value ?? "");
   if (/[",\n\r]/.test(string)) return `"${string.replace(/"/g, '""')}"`;
   return string;
+}
+
+function locateSqlWasm(file) {
+  if (typeof window !== "undefined" && window.location) {
+    return new URL(file, window.location.href).href;
+  }
+  return new URL(`../public/${file}`, import.meta.url).href;
 }
