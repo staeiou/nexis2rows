@@ -484,8 +484,22 @@ function hideProgressSoon() {
 }
 
 async function sha256(bytes) {
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  if (globalThis.crypto?.subtle?.digest) {
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+  return fnv1a64(bytes);
+}
+
+function fnv1a64(bytes) {
+  let hash = 0xcbf29ce484222325n;
+  const prime = 0x100000001b3n;
+  const mask = 0xffffffffffffffffn;
+  for (const byte of bytes) {
+    hash ^= BigInt(byte);
+    hash = (hash * prime) & mask;
+  }
+  return `fnv1a64-${hash.toString(16).padStart(16, "0")}`;
 }
 
 function downloadBlob(content, name, type) {
