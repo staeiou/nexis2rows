@@ -19,7 +19,7 @@ document.querySelector("#app").innerHTML = `
       <header class="topbar">
         <div>
           <h1>nexis2rows</h1>
-          <p>Convert Nexis Uni PDF exports, whether uploaded as bare PDFs or ZIP files, into local data files.</p>
+          <p>Convert Nexis Uni PDF exports, whether uploaded as bare PDFs or ZIP files, into local tabular files. Runs 100% locally inside your browser, we never see your files.</p>
         </div>
         <div class="actions">
           <button id="downloadSqlite" class="primary" disabled>Download SQLite</button>
@@ -31,7 +31,7 @@ document.querySelector("#app").innerHTML = `
       <label id="dropzone" class="dropzone">
         <input id="fileInput" type="file" accept=".zip,.pdf,application/pdf,application/zip" multiple />
         <span class="drop-title">Drop Nexis Uni PDFs or ZIPs</span>
-        <span class="drop-subtitle">Add bare PDFs or ZIPs. ZIPs expand into pending PDFs that can be dragged into the exact import order.</span>
+        <span class="drop-subtitle">Add bare PDFs or ZIPs of PDFs. You can re-order and remove files after.</span>
       </label>
 
       <section id="pendingPanel" class="panel pending-panel" hidden>
