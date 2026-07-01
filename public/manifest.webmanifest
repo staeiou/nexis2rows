@@ -1,14 +1,14 @@
 {
-  "name": "nexis2db",
-  "short_name": "nexis2db",
-  "description": "Parse Nexis Uni PDF exports into an offline SQLite database.",
-  "start_url": "/nexis2db/",
+  "name": "nexis2rows",
+  "short_name": "nexis2rows",
+  "description": "Parse Nexis Uni PDF exports into offline SQLite, Excel, and CSV rows.",
+  "start_url": "/nexis2rows/",
   "display": "standalone",
   "background_color": "#f5f3ee",
   "theme_color": "#26352f",
   "icons": [
     {
-      "src": "/nexis2db/icon.svg",
+      "src": "/nexis2rows/icon.svg",
       "sizes": "any",
       "type": "image/svg+xml"
     }

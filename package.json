@@ -1,5 +1,5 @@
 {
-  "name": "nexis2db",
+  "name": "nexis2rows",
   "version": "1.0.0",
   "type": "module",
   "scripts": {
@@ -11,7 +11,7 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "Offline Nexis Uni PDF export importer to SQLite",
+  "description": "Offline Nexis Uni PDF export importer to SQLite, Excel, and CSV rows",
   "dependencies": {
     "jszip": "^3.10.1",
     "pdfjs-dist": "^5.6.205",

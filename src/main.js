@@ -18,7 +18,7 @@ document.querySelector("#app").innerHTML = `
     <section class="workspace">
       <header class="topbar">
         <div>
-          <h1>nexis2db</h1>
+          <h1>nexis2rows</h1>
           <p>Convert Nexis Uni PDF exports, whether uploaded as bare PDFs or ZIP files, into local data files.</p>
         </div>
         <div class="actions">
@@ -152,14 +152,14 @@ downloadSqlite.addEventListener("click", async () => {
   try {
     const bytes = await createDatabase(state.articles);
     setProgress("SQLite database ready", 100);
-    downloadBlob(bytes, "nexis2db.sqlite", "application/vnd.sqlite3");
+    downloadBlob(bytes, "nexis2rows.sqlite", "application/vnd.sqlite3");
   } finally {
     setBusy(false);
   }
 });
 downloadCsv.addEventListener("click", () => {
   setProgress("Preparing CSV export", 100);
-  downloadBlob(exportCsv(state.articles), "nexis2db.csv", "text/csv;charset=utf-8");
+  downloadBlob(exportCsv(state.articles), "nexis2rows.csv", "text/csv;charset=utf-8");
   hideProgressSoon();
 });
 downloadExcel.addEventListener("click", () => {
@@ -168,7 +168,7 @@ downloadExcel.addEventListener("click", () => {
   setProgress("Excel workbook ready", 100);
   downloadBlob(
     bytes,
-    "nexis2db.xlsx",
+    "nexis2rows.xlsx",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
   );
   hideProgressSoon();

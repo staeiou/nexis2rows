@@ -1,4 +1,4 @@
-const CACHE_NAME = "nexis2db-v3";
+const CACHE_NAME = "nexis2rows-v1";
 const APP_BASE = self.registration.scope;
 const APP_ASSETS = [
   "",
