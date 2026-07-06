@@ -84,8 +84,16 @@ function parseArticle(article, ordinal, header, source) {
   };
 }
 
+// XML 1.0 Char production (used by the xlsx export) excludes C0 controls
+// other than tab/CR/LF and the Unicode noncharacters U+FFFE/U+FFFF. PDF.js
+// emits U+FFFF when a font glyph has no Unicode mapping, and the xlsx
+// library writes it through unescaped, corrupting the exported .xlsx file.
+export function sanitizeXmlText(text) {
+  return text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\ufffe\uffff]/g, "");
+}
+
 function normalizeText(text) {
-  return text
+  return sanitizeXmlText(text)
     .replace(/\r\n?/g, "\n")
     .replace(/\u00a0/g, " ")
     .replace(/[ \t]+\n/g, "\n")
