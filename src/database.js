@@ -22,7 +22,6 @@ const ARTICLE_COLUMNS = [
   "dateline",
   "load_date",
   "body",
-  "abstract",
   "body_sha256",
   "raw_text"
 ];
@@ -52,7 +51,6 @@ export async function createDatabase(articles) {
       dateline TEXT,
       load_date TEXT,
       body TEXT,
-      abstract TEXT,
       body_sha256 TEXT,
       raw_text TEXT
     );

@@ -1,6 +1,23 @@
 const PAGE_HEADER_RE = /^\s*Page\s+\d+\s+of\s+\d+\s*$/i;
 const FOOTER_RE = /\|\s*About LexisNexis\s*\|\s*Privacy Policy\s*\|\s*Terms & Conditions\s*\|\s*Copyright/i;
 const ADVANCE_LINK_RE = /^https?:\/\/advance\.lexis\.com\/api\/document/i;
+// Observed maximum in real exports is 1 ("Late Edition - Final"); 3 leaves
+// headroom without letting the date search wander up into the headline.
+const MAX_EDITION_LINES = 3;
+// Nexis prints the date on its own line between the publication name and the
+// "Copyright <year>" line. Anchoring on real month names (rather than "any
+// capitalized word") keeps headline text like "Hamas 2026 Offensive" from being
+// mistaken for a date when the real date line is in an unrecognized format.
+const MONTH = "(?:January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Sept|Sep|Aug|Oct|Nov|Dec)\\.?";
+const DATE_LINE_RE = new RegExp(
+  "^(?:" +
+    `${MONTH}\\b\\s+\\d{1,2},?\\s+\\d{4}` + // July 19, 2026
+    `|\\d{1,2}\\.?\\s+${MONTH}\\b\\s+\\d{4}` + // 19 July 2026
+    `|${MONTH}\\b\\s+\\d{4}` + // July 2026
+    "|\\d{4}-\\d{2}-\\d{2}" + // 2026-07-19
+    ")\\b",
+  "i"
+);
 
 export function parseNexisPdfText(text, source = {}, pageData = null) {
   const pages = Array.isArray(pageData) ? pageData : null;
@@ -45,13 +62,20 @@ function parseArticle(article, ordinal, header, source) {
   const firstPageLines = cleanArticleLines(firstPage.text.split(/\n/));
   const bodyIndex = lines.findIndex((line) => line.trim() === "Body");
   const loadDateIndex = findLastIndex(lines, (line) => /^Load-Date:\s*/i.test(line));
-  const copyrightIndex = lines.findIndex((line) => /^Copyright\s+\d{4}\s+/i.test(line));
+  const endOfDocumentIndex = findLastIndex(lines, (line) => /^End of Document\s*$/i.test(line));
+  const copyrightIndex = lines.findIndex((line) => /^Copyright\s*(?:©\s*)?\d{4}\b/i.test(line));
 
   const title = extractTitle(firstPageLines, firstPage.annotations);
-  const publication = compact(lines[copyrightIndex - 2] || "");
-  const publication_date = compact(lines[copyrightIndex - 1] || "");
+  const { publication, publication_date } = resolvePublication(lines, copyrightIndex, {
+    title,
+    ordinal,
+    pdfName: source.pdfName
+  });
   const metadataLines = lines.slice(copyrightIndex + 1, bodyIndex);
-  const bodyLines = lines.slice(bodyIndex + 1, loadDateIndex >= 0 ? loadDateIndex : lines.length);
+  // The body runs from the "Body" marker to the Load-Date line, or to
+  // "End of Document" when the article carries no Load-Date.
+  const bodyEndIndex = loadDateIndex >= 0 ? loadDateIndex : endOfDocumentIndex >= 0 ? endOfDocumentIndex : lines.length;
+  const bodyLines = lines.slice(bodyIndex + 1, bodyEndIndex);
 
   const metadata = parseMetadata(metadataLines);
   const body = cleanBody(bodyLines);
@@ -78,7 +102,6 @@ function parseArticle(article, ordinal, header, source) {
     dateline: metadata.Dateline || "",
     load_date: loadDate,
     body,
-    abstract: extractAbstract(body),
     body_sha256: "",
     raw_text: chunk.trim()
   };
@@ -112,6 +135,48 @@ function cleanArticleLines(lines) {
       const next = compact(all[index + 1] || "");
       return !(trimmed && trimmed === next && index < 2);
     });
+}
+
+// The block above "Copyright <year>" is: publication name, date, then zero or
+// more edition lines ("Late Edition - Final"). Anchoring on the date line and
+// taking the publication from directly above it handles any number of edition
+// lines; the fixed-offset fallback covers date formats we don't recognize.
+function resolvePublication(lines, copyrightIndex, context) {
+  const where = `${context.pdfName || "unknown PDF"}, article ${context.ordinal}, "${context.title}"`;
+
+  if (copyrightIndex < 0) {
+    warn(`no "Copyright <year>" line found (${where}); publication and publication_date left blank`);
+    return { publication: "", publication_date: "" };
+  }
+
+  let dateIndex = -1;
+  for (let i = copyrightIndex - 1; i >= Math.max(0, copyrightIndex - MAX_EDITION_LINES - 1); i--) {
+    if (DATE_LINE_RE.test(lines[i] || "")) {
+      dateIndex = i;
+      break;
+    }
+  }
+
+  if (dateIndex < 0) {
+    warn(`no recognizable date line above "Copyright" (${where}); using fixed-offset fallback`);
+  }
+
+  const publication = compact((dateIndex >= 0 ? lines[dateIndex - 1] : lines[copyrightIndex - 2]) || "");
+  const publication_date = compact((dateIndex >= 0 ? lines[dateIndex] : lines[copyrightIndex - 1]) || "");
+
+  // Both fields landing one line off is the failure mode this logic exists to
+  // prevent, and it is cheap to detect after the fact.
+  if (!publication) {
+    warn(`publication came out blank (${where})`);
+  } else if (DATE_LINE_RE.test(publication)) {
+    warn(`publication looks like a date: "${publication}" (${where})`);
+  }
+
+  return { publication, publication_date };
+}
+
+function warn(message) {
+  console.warn(`nexis2rows: ${message}`);
 }
 
 function parseMetadata(lines) {
@@ -196,11 +261,6 @@ function cleanBody(lines) {
     cleaned.push(trimmed);
   }
   return cleaned.join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
-}
-
-function extractAbstract(body) {
-  const match = /\bABSTRACT\s+([\s\S]*?)(?:\n\s*FULL TEXT\b|$)/i.exec(body);
-  return match ? match[1].trim() : "";
 }
 
 function firstMatch(text, regex) {
