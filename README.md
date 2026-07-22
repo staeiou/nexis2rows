@@ -34,7 +34,7 @@ Three exports. They do **not** carry identical columns:
 
 | File | Columns |
 | --- | --- |
-| `nexis2rows.sqlite` | All 20 columns below, including `raw_text`. `articles` table, indexed on `job_number`, `publication_date`, `title` |
+| `nexis2rows.sqlite` | Every column below, including `raw_text`. `articles` table, indexed on `job_number`, `publication_date`, `title` |
 | `nexis2rows.csv` | A leading `row` number, then every column **except `raw_text`**. UTF-8 |
 | `nexis2rows.xlsx` | Same as CSV, plus `body.continued.1`, `body.continued.2`, … when a body exceeds Excel's ~32k-character cell limit |
 
@@ -50,6 +50,8 @@ duplicates `body`. **If you want the auditable source text, export SQLite.**
 | `source_sha256` | Hash of the source PDF — identifies duplicate imports |
 | `nexis_link` | Canonical `advance.lexis.com` permalink for the article |
 | `source_article_ordinal` | 1-based position of the article within its PDF |
+| `source_page` | 1-based page in the source PDF where the article starts — open that page to check any row against its source |
+| `document_type` | `news` or `case` (see [Document types](#document-types)) |
 | `delivery_date` | "Date and Time" from the Nexis delivery cover page |
 | `job_number` | Nexis job number from the cover page |
 | `search_terms` | The search that produced the export |
@@ -65,6 +67,35 @@ duplicates `body`. **If you want the auditable source text, export SQLite.**
 | `body` | Full article text |
 | `body_sha256` | Hash of `body` — for dedup and change detection |
 | `raw_text` | Unparsed text of the article's pages, for auditing |
+
+### Document types
+
+Nexis exports more than newspaper articles, and the kinds differ structurally.
+`document_type` says which shape a row came from:
+
+- **`news`** — newspapers and wires, plus collections like *Primary Sources in
+  U.S. Presidential History*, which carry no copyright line.
+- **`case`** — court opinions. `publication` holds the **court**,
+  `publication_date` the decision date (often compound, e.g.
+  `Submitted April 14, 1886. ; May 10, 1886, Decided`), and `body` the opinion.
+
+Case documents fill these additional columns, which are blank for news rows:
+
+| Column | What it holds |
+| --- | --- |
+| `citation` | Parallel citations, e.g. `118 U.S. 356 *; 6 S. Ct. 1064 **; …` |
+| `caption` | Party caption, e.g. `YICK WO v. HOPKINS, SHERIFF.` |
+| `docket` | Docket number, or `No Number in Original` |
+| `prior_history` / `subsequent_history` | Procedural history |
+| `disposition` | Disposition line |
+| `core_terms` | Nexis-generated key terms |
+| `overview` | Case summary overview |
+| `headnotes` | LexisNexis headnotes |
+| `syllabus` | Syllabus |
+| `counsel` | Counsel of record |
+| `judges` | Panel |
+| `opinion_by` / `concur_by` / `dissent_by` | Authoring justices |
+| `concur` / `dissent` | Concurrence and dissent text (all of them, concatenated) |
 
 `section`, `byline`, and `dateline` are blank whenever Nexis did not print them,
 which is common: in one 500-article mixed-source export, only 125 articles
@@ -97,6 +128,7 @@ npm run test:all  # both
 | `scripts/test-xml-sanitize.mjs` | Stripping XML-illegal characters that corrupt `.xlsx` |
 | `scripts/test-ui.mjs` | UI structure — every queried element id exists in the markup |
 | `scripts/test-parser.mjs` | Parsing real Nexis PDFs, asserting counts and specific rows |
+| `scripts/dump-articles.mjs` | Not a test — prints parsed rows verbatim with their PDF page, for checking output against the source by eye |
 | `e2e/app.spec.js` | The actual app: upload → parse → filter → download all three formats |
 
 The Playwright suite is what covers the parts Node cannot: PDF parsing happens

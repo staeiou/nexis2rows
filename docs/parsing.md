@@ -35,10 +35,109 @@ The pipeline is:
    lines by baseline. The app and the test harness both use it, so tests see
    exactly the text the app sees.
 2. `parseNexisPdfText` splits pages into articles. A page starts an article if it
-   matches `Page 1 of N` **and** contains a `Body` line; an article ends at
-   `End of Document`.
-3. `parseArticle` locates anchors in the article's lines and slices fields out
-   between them.
+   matches `Page 1 of N` **and** carries a document-type marker (`Body` or
+   `Reporter`); an article ends at `End of Document`.
+3. `parseArticle` detects the document type, then dispatches to
+   `parseNewsDocument` or `parseCaseDocument`, which locate anchors in the
+   article's lines and slice fields out between them.
+
+## Document types
+
+Nexis exports several kinds of document, and they differ structurally, not just
+cosmetically. `detectDocumentType` picks between them:
+
+| Type | Detected by | Notes |
+| --- | --- | --- |
+| `news` | a standalone `Body` line | Newspapers and wires, plus the *Primary Sources in U.S. Presidential History* collection, which shares the layout with two twists (below) |
+| `case` | a standalone `Reporter` line and no `Body` | Court opinions. Structurally alien to news |
+
+**Requiring a `Body` line to recognize an article start once produced zero rows,
+silently, for an entire 250-case export.** Detection now accepts either marker,
+and `scripts/test-parser.mjs` asserts a non-zero article count per fixture.
+
+### Primary-source documents (no copyright line)
+
+These are public-domain government documents, so Nexis prints **no
+`Copyright <year>` line at all** — and the parser used to anchor the whole
+masthead on it, blanking `publication` and `publication_date` for all 500
+articles in one export. They also print the bibliographic block *below* `Body`
+rather than above it:
+
+```
+Page 1 of 2
+Address Before the Civilian Advisory Board of the Navy…   <- running head
+Address Before the Civilian Advisory Board of the Navy…   <- title
+Primary Sources in U.S. Presidential History              <- publication
+October 7, 1915                                           <- date
+Length: 538 words              <- metadata starts here, no Copyright line
+Byline: Woodrow Wilson
+Body
+Document Type: Wilson, Woodrow--Speech [Primary Source]   <- NOT body text
+Author: Wilson, Woodrow
+Subject Descriptors: National defense; Naval forces; …    <- ends the block
+[Page 8076]                                               <- body starts here
+```
+
+Two rules follow, both in `parseNewsDocument`:
+
+- `findHeaderEnd` ends the masthead at whichever comes first, the `Copyright`
+  line or the first recognized metadata key. Modern news always hits `Copyright`
+  first, so this is a no-op there.
+- `skipPrimarySourceMetadata` drops the below-`Body` block. It fires only when
+  the first body line is `Document Type:` and there is a `Subject Descriptors:`
+  line to end on; otherwise it leaves the body alone rather than guess.
+
+The Subject Descriptors list wraps across lines and **breaks mid-phrase**
+(`"… Department of"` / `"Interior; Emancipation; …"`), so a trailing separator
+does *not* mark a wrap. What distinguishes a wrapped line from the heading that
+follows is that wrapped lines still contain a `;`. Do not "fix" this back to a
+trailing-separator test — it leaves descriptor text in 40 of 500 bodies.
+
+### Court cases
+
+```
+Page 1 of 13
+Yick Wo v. Hopkins, 118 U.S. 356          running head
+Yick Wo v. Hopkins                        title
+Supreme Court of the United States        court    -> publication
+Submitted April 14, 1886. ; May 10, …     date(s)  -> publication_date
+No Number in Original                     docket
+Reporter
+118 U.S. 356 *; 6 S. Ct. 1064 **; …       citation
+YICK WO v. HOPKINS, SHERIFF.              caption
+Prior History: …
+Core Terms / Overview / Headnotes / Syllabus / Counsel: / Judges:
+Opinion by: / Opinion / Concur by: / Concur / Dissent by: / Dissent
+End of Document
+```
+
+`parseCaseDocument` walks **up** from `Reporter`: an optional docket line, then
+one or more date lines, and the first line above those is the court. Dates wrap
+when a case was argued, restored to the docket, and reargued, so they are
+consumed greedily — across 250 cases, 6 had multi-line dates.
+
+Case dates do not start with a month (`"Argued December 11, 14, 1885. ; February
+1, 1886, Decided"`), so the news `DATE_LINE_RE` matches **none** of them; cases
+use their own `CASE_DATE_RE`, which also allows a bare court term with no day
+(`"October, 1841, Term"` — *Folsom v. Marsh*).
+
+Sections always appear in one relative order, so each section's text is the span
+between its marker and the next marker present. `Opinion` becomes `body`;
+`Syllabus`, `Headnotes`, `Counsel`, `Judges`, `Dissent`, `Concur`,
+`Prior History`, `Disposition` and the rest get their own columns. A case may
+carry several dissents; repeated markers are concatenated, not overwritten.
+
+The `Headnotes` marker appears as both `Headnotes` and `LexisNexis® Headnotes`.
+
+## Running heads
+
+Nexis repeats a running head — the title, or a case name plus citation — under
+`Page N of M` at the top of **every continuation page**. Joining pages naively
+splices it into the middle of the body once per page break: it accounted for 231
+stray title occurrences across 139 NYT articles and 1,823 across 250 cases.
+`joinArticlePages` strips it, but only on an exact match against the running head
+taken from page 1, so an unrecognized layout keeps its text rather than losing a
+real line. `raw_text` is built from the unmodified pages and still contains it.
 
 ## Anchors
 
@@ -51,6 +150,8 @@ works relative to them. The important ones:
 | `loadDateIndex` | **last** line matching `^Load-Date:` |
 | `endOfDocumentIndex` | **last** line equal to `End of Document` |
 | `copyrightIndex` | first line matching `^Copyright\s*(©\s*)?\d{4}` |
+| `headerEndIndex` | the earlier of `copyrightIndex` and the first metadata key |
+| `reporterIndex` | (cases) first line equal to `Reporter` |
 
 Both Load-Date and End-of-Document use *last*, not first, so a stray occurrence
 earlier in prose can only extend the body, never truncate it early.
