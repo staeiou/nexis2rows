@@ -11,5 +11,10 @@ export const FAMILY_SITES = [
     name: "docs2rows",
     url: "https://stuartgeiger.com/docs2rows",
     description: "Convert PDFs, DOCX, RTF, and other documents into SQLite, Excel, or CSV rows."
+  },
+  {
+    name: "qda2prompt",
+    url: "https://stuartgeiger.com/qda2prompt",
+    description: "Build transparent coding prompts and choose useful material to code next."
   }
 ];
