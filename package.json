@@ -6,11 +6,24 @@
     "dev": "vite --host 127.0.0.1 --port 3000",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1 --port 3000",
-    "test": "node scripts/test-parser.mjs"
+    "test": "node scripts/test-xml-sanitize.mjs && node scripts/test-ui.mjs && node scripts/test-parser.mjs",
+    "test:e2e": "playwright test",
+    "test:all": "npm test && npm run test:e2e"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "nexis",
+    "nexis-uni",
+    "lexisnexis",
+    "pdf",
+    "sqlite",
+    "csv",
+    "xlsx",
+    "content-analysis",
+    "research-tools",
+    "offline"
+  ],
+  "author": "Stuart Geiger (https://stuartgeiger.com)",
+  "license": "MIT",
   "description": "Offline Nexis Uni PDF export importer to SQLite, Excel, and CSV rows",
   "dependencies": {
     "jszip": "^3.10.1",
@@ -18,5 +31,8 @@
     "sql.js": "^1.14.1",
     "vite": "^8.1.0",
     "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1"
   }
 }

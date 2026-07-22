@@ -1,4 +1,14 @@
 *.ipynb_checkpoint*
 dist/
 node_modules/
+
+# Local Nexis exports and everything derived from them. These are copyrighted
+# news content and must never be committed. Test fixture PDFs live in tests/;
+# the suite skips any fixture that is absent (see scripts/test-parser.mjs).
 tests/
+tmp/
+
+# Playwright output
+test-results/
+playwright-report/
+blob-report/
