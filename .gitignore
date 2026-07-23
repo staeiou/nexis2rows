@@ -5,8 +5,12 @@ node_modules/
 # Local Nexis exports and everything derived from them. These are copyrighted
 # news content and must never be committed. Test fixture PDFs live in tests/;
 # the suite skips any fixture that is absent (see scripts/test-parser.mjs).
+# fixtures/ holds the same kind of content for the export-matrix tests (see
+# scripts/test-delivery.mjs and e2e/permutations.spec.js) and is skipped the
+# same way.
 tests/
 tmp/
+fixtures/
 
 # Playwright output
 test-results/

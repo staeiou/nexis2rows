@@ -5,6 +5,15 @@ import JSZip from "jszip";
 import { createDatabase, exportCsv, exportExcel } from "./database.js";
 import { extractPdfPages } from "./pdf.js";
 import { parseNexisPdfText } from "./parser.js";
+import {
+  readPdfDelivery,
+  readDocxDelivery,
+  createDeliveryIndex,
+  recordDelivery,
+  fillProvenance,
+  reconcileTitles,
+  isCompanion
+} from "./delivery.js";
 import { sha256 } from "./hash.js";
 import { downloadBlob } from "./download.js";
 import { mountApp } from "./ui/elements.js";
@@ -120,25 +129,34 @@ async function stageFiles(files) {
   }
 }
 
+// Nexis exports in either format, singly or zipped, with or without the
+// bibliography companion files -- and every combination of those turns up in
+// practice, including a ZIP holding all of them at once.
+function sourceKind(name, type = "") {
+  const lower = String(name || "").toLowerCase();
+  if (lower.endsWith(".pdf") || type === "application/pdf") return "PDF";
+  if (lower.endsWith(".docx") || lower.endsWith(".doc")) return "DOCX";
+  return "";
+}
+
 async function stageOne(file) {
-  const lower = file.name.toLowerCase();
-  if (lower.endsWith(".zip")) {
+  if (file.name.toLowerCase().endsWith(".zip")) {
     const zip = await JSZip.loadAsync(file);
-    const pdfEntries = Object.values(zip.files)
-      .filter((entry) => !entry.dir && entry.name.toLowerCase().endsWith(".pdf"))
+    const entries = Object.values(zip.files)
+      .filter((entry) => !entry.dir && sourceKind(entry.name))
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
 
-    if (!pdfEntries.length) {
-      state.imports.push({ name: file.name, detail: "No PDFs found", count: 0, status: "error" });
+    if (!entries.length) {
+      state.imports.push({ name: file.name, detail: "No PDF or DOCX files found", count: 0, status: "error" });
       return;
     }
 
-    for (const entry of pdfEntries) {
+    for (const entry of entries) {
       state.pendingFiles.push({
         id: pendingId++,
         name: file.name,
         detail: entry.name,
-        kind: "PDF",
+        kind: sourceKind(entry.name),
         archiveName: file.name,
         pdfName: entry.name,
         getBytes: () => entry.async("uint8array")
@@ -147,12 +165,13 @@ async function stageOne(file) {
     return;
   }
 
-  if (lower.endsWith(".pdf") || file.type === "application/pdf") {
+  const kind = sourceKind(file.name, file.type);
+  if (kind) {
     state.pendingFiles.push({
       id: pendingId++,
       name: file.name,
-      detail: "Bare PDF",
-      kind: "PDF",
+      detail: `Bare ${kind}`,
+      kind,
       archiveName: "",
       pdfName: file.name,
       getBytes: async () => new Uint8Array(await file.arrayBuffer())
@@ -160,7 +179,7 @@ async function stageOne(file) {
     return;
   }
 
-  state.imports.push({ name: file.name, detail: "Skipped non-PDF export", count: 0, status: "error" });
+  state.imports.push({ name: file.name, detail: "Skipped: not a PDF, DOCX, or ZIP", count: 0, status: "error" });
 }
 
 async function importPendingFiles() {
@@ -174,11 +193,16 @@ async function importFiles(files) {
   if (!files.length || state.busy) return;
   setBusy(true, "Reading files...");
   setProgress("Reading selected files", 1);
+  // Provenance found in a doclist, keyed by the archive it came from. Collected
+  // as we go and applied at the end, so it does not matter whether the doclist
+  // is read before or after the articles it describes.
+  const deliveries = createDeliveryIndex();
   try {
     for (let index = 0; index < files.length; index += 1) {
       setProgress(`Reading ${files[index].name}`, Math.floor((index / files.length) * 10));
-      await importPdf(await files[index].getBytes(), files[index].archiveName, files[index].pdfName);
+      await importSource(files[index], deliveries);
     }
+    applyDeliveryProvenance(deliveries);
     setProgress("Import complete", 100);
     hideProgressSoon();
   } catch (error) {
@@ -191,29 +215,66 @@ async function importFiles(files) {
   }
 }
 
-async function importPdf(bytes, archiveName, pdfName) {
+// Reads one staged file in whichever format it arrived in, then routes it: a
+// real export is parsed into rows, a bibliography companion contributes
+// provenance instead. Both formats reduce to the same page entries, so
+// src/parser.js does not know or care which one it was handed.
+async function importSource(file, deliveries) {
+  const { archiveName, pdfName, kind } = file;
+  const bytes = await file.getBytes();
   const sourceHash = await sha256(bytes);
+  const label = pdfName || archiveName;
+
   if (state.imports.some((item) => item.sourceHash === sourceHash)) {
-    state.imports.push({ name: archiveName || pdfName, detail: "Skipped duplicate PDF", count: 0, status: "warn" });
+    state.imports.push({ name: label, detail: `Skipped duplicate ${kind}`, count: 0, status: "warn" });
     return;
   }
 
-  const label = archiveName || pdfName;
-  updateLog(`Extracting ${label}...`);
-  setProgress(`Extracting ${label}`, 10);
+  updateLog(`Reading ${label}...`);
+  setProgress(`Reading ${label}`, 10);
 
-  const pages = await extractPdfPages(bytes, ({ pageNumber, pageCount }) => {
-    setProgress(`Extracting ${label}: page ${pageNumber} of ${pageCount}`, 10 + Math.floor((pageNumber / pageCount) * 75));
-    if (pageNumber === 1 || pageNumber % 100 === 0 || pageNumber === pageCount) {
-      updateLog(`Extracting ${label}: page ${pageNumber} of ${pageCount}`);
-    }
-  });
+  const read = kind === "DOCX" ? await readDocxDelivery(bytes) : await readPdfSource(bytes, label);
+  const deliveryKey = archiveName || pdfName;
+
+  if (isCompanion(read.classification)) {
+    recordDelivery(deliveries, deliveryKey, read);
+    state.imports.push({
+      name: label,
+      detail:
+        read.classification === "doclist"
+          ? `Bibliography: ${read.titles.length} document${read.titles.length === 1 ? "" : "s"} listed`
+          : `Bibliography: ${read.citations.length} citation${read.citations.length === 1 ? "" : "s"}`,
+      count: 0,
+      sourceHash,
+      status: "ok"
+    });
+    render();
+    return;
+  }
+
+  if (read.classification !== "articles") {
+    state.imports.push({
+      name: label,
+      detail: `No Nexis documents found in this ${kind}`,
+      count: 0,
+      sourceHash,
+      status: "error"
+    });
+    render();
+    return;
+  }
 
   setProgress(`Parsing ${label}`, 90);
-  const text = pages.map((page) => page.text).join("\n\f\n");
-  const parsed = parseNexisPdfText(text, { archiveName, pdfName, sha256: sourceHash }, pages);
+  const text = read.pages.map((page) => page.text).join("\n\f\n");
+  const parsed = parseNexisPdfText(
+    text,
+    { archiveName, pdfName, sha256: sourceHash },
+    read.pages,
+    { headerText: read.headerText }
+  );
   for (const article of parsed) {
     article.body_sha256 = await sha256(new TextEncoder().encode(article.body));
+    article.delivery_key = deliveryKey;
   }
 
   state.articles.push(...parsed);
@@ -224,6 +285,39 @@ async function importPdf(bytes, archiveName, pdfName) {
     sourceHash,
     status: parsed.length ? "ok" : "error"
   });
+  render();
+}
+
+async function readPdfSource(bytes, label) {
+  const pages = await extractPdfPages(bytes, ({ pageNumber, pageCount }) => {
+    setProgress(`Extracting ${label}: page ${pageNumber} of ${pageCount}`, 10 + Math.floor((pageNumber / pageCount) * 75));
+    if (pageNumber === 1 || pageNumber % 100 === 0 || pageNumber === pageCount) {
+      updateLog(`Extracting ${label}: page ${pageNumber} of ${pageCount}`);
+    }
+  });
+  return readPdfDelivery(pages);
+}
+
+// Report what the doclist expected against what actually parsed, so a partial
+// import is visible instead of being silently short.
+function applyDeliveryProvenance(deliveries) {
+  for (const [key, delivery] of deliveries) {
+    const rows = state.articles.filter((article) => article.delivery_key === key);
+    if (!rows.length) continue;
+
+    fillProvenance(rows, delivery.headerText);
+
+    if (delivery.titles.length) {
+      const { listed, found, missing } = reconcileTitles(rows, delivery.titles);
+      state.imports.push({
+        name: key,
+        detail: `${found} of ${listed} listed documents parsed`,
+        count: rows.length,
+        status: missing.length ? "warn" : "ok"
+      });
+    }
+  }
+  for (const article of state.articles) delete article.delivery_key;
   render();
 }
 

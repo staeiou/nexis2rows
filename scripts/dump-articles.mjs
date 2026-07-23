@@ -21,7 +21,11 @@ if (!file) {
 const pdf = await pdfjsLib.getDocument({
   data: new Uint8Array(fs.readFileSync(file)),
   disableWorker: true,
-  standardFontDataUrl: new URL("../node_modules/pdfjs-dist/standard_fonts/", import.meta.url).href
+  // pdf.js ships standard_fonts as .pfb but asks for .ttf, so it warns once per
+  // font per file. Text extraction does not use glyph data, so the warnings are
+  // noise that buries real output; ERRORS-only keeps genuine failures visible.
+  standardFontDataUrl: new URL("../node_modules/pdfjs-dist/standard_fonts/", import.meta.url).href,
+  verbosity: pdfjsLib.VerbosityLevel.ERRORS
 }).promise;
 const pages = await readPages(pdf);
 const articles = parseNexisPdfText(pages.map((page) => page.text).join("\n\f\n"), { pdfName: file }, pages);

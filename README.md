@@ -1,9 +1,10 @@
 # nexis2rows
 
-Turn Nexis Uni PDF exports into a SQLite database, an Excel workbook, or a CSV —
-one row per article.
+Turn Nexis Uni exports into a SQLite database, an Excel workbook, or a CSV —
+one row per article. PDF or DOCX, a single file or a ZIP, with or without the
+bibliography.
 
-**Everything runs in your browser.** Your PDFs are never uploaded: they are read,
+**Everything runs in your browser.** Your files are never uploaded: they are read,
 parsed, and converted locally, and the export is handed straight back to you as a
 file download. There is no server, no account, and no telemetry. After the first
 visit a service worker caches the app so it works offline.
@@ -14,18 +15,48 @@ Hosted: <https://stuartgeiger.com/nexis2rows>
 
 Or run it locally — see [Development](#development).
 
-### Getting a PDF out of Nexis Uni
+### Getting an export out of Nexis Uni
 
 1. Run your search in Nexis Uni.
 2. Select the documents you want, then **Download**.
-3. Choose PDF as the format, and keep the default of **separate documents in one
-   file**. nexis2rows splits articles on the `End of Document` marker Nexis puts
-   between them.
-4. Drop the resulting `.pdf` onto nexis2rows. A `.zip` of such PDFs works too; it
-   is expanded into a pending list you can reorder before importing.
+3. **For best results, choose: full documents, include bibliography, file type
+   DOCX, and save as individual files (`.ZIP`).** Every other combination works
+   too — this one just carries the most structure:
+   - **PDF or DOCX**
+   - **Separate documents in one file** (a single combined export) or
+     **each document in its own file** (a ZIP)
+   - **Include bibliography** on or off
+4. Drop the result onto nexis2rows. A `.zip` is expanded into a pending list you
+   can reorder before importing.
+
+**Prefer DOCX if you have the choice.** A PDF repeats a `Page N of M` running
+head on every continuation page, which has to be detected and stripped; DOCX
+carries none of that furniture, keeps paragraphs whole instead of hard-wrapping
+them at the page width, and marks each title with a real heading style. Across
+the same 250 documents exported both ways, the two agree on every title and
+differ in body text only by that furniture.
+
+**"Include bibliography" is safe to leave on** — but what it does depends on
+packaging. A ZIP of individually exported files always carries a manifest
+(search provenance and a numbered title list), with or without this toggle;
+turning it on adds a second file with the actual citations, one per document.
+Neither holds articles, and both are recognised by content rather than
+filename. They are not parsed into rows; instead the manifest supplies
+`search_terms`, `job_number`, `delivery_date`, and `search_type` for exports
+that would otherwise lack them, and the import log reports how many of the
+documents it lists were actually parsed — regardless of whether the citations
+file is also present.
+
+A single combined file is different: there is no second file to add, so
+"include bibliography" instead prepends every citation and the title list
+directly into the same file, ahead of the articles. **nexis2rows does not
+currently extract that block** — the articles themselves still parse
+correctly, but the citations and the "documents listed" check are silently
+unavailable in that combination. If you want that check, export as individual
+files rather than one combined file.
 
 Nexis caps a single download at 500 documents, so a large corpus arrives as
-several PDFs. Import them together — ordering is preserved, and identical PDFs
+several files. Import them together — ordering is preserved, and identical files
 are detected by hash and skipped rather than double-counted.
 
 ## Output
@@ -45,12 +76,12 @@ duplicates `body`. **If you want the auditable source text, export SQLite.**
 
 | Column | What it holds |
 | --- | --- |
-| `source_archive` | ZIP filename, if the PDF came from a ZIP |
-| `source_pdf` | PDF filename |
-| `source_sha256` | Hash of the source PDF — identifies duplicate imports |
+| `source_archive` | ZIP filename, if the file came from a ZIP |
+| `source_pdf` | Source filename (PDF or DOCX) |
+| `source_sha256` | Hash of the source file — identifies duplicate imports |
 | `nexis_link` | Canonical `advance.lexis.com` permalink for the article |
-| `source_article_ordinal` | 1-based position of the article within its PDF |
-| `source_page` | 1-based page in the source PDF where the article starts — open that page to check any row against its source |
+| `source_article_ordinal` | 1-based position of the article within its source file |
+| `source_page` | 1-based page in the source PDF where the article starts — open that page to check any row against its source. DOCX has no pages, so for DOCX this is the document's position within the file |
 | `document_type` | `news` or `case` (see [Document types](#document-types)) |
 | `delivery_date` | "Date and Time" from the Nexis delivery cover page |
 | `job_number` | Nexis job number from the cover page |
@@ -128,6 +159,8 @@ npm run test:all  # both
 | `scripts/test-xml-sanitize.mjs` | Stripping XML-illegal characters that corrupt `.xlsx` |
 | `scripts/test-ui.mjs` | UI structure — every queried element id exists in the markup |
 | `scripts/test-parser.mjs` | Parsing real Nexis PDFs, asserting counts and specific rows |
+| `scripts/test-delivery.mjs` | The export matrix — PDF/DOCX × single/ZIP × bibliography, against `fixtures/`'s same 100 documents exported all eight ways — and that all eight agree on every title |
+| `e2e/permutations.spec.js` | The same matrix driven through the real app in a browser: staging, the worker, the import log, and the exported columns |
 | `scripts/dump-articles.mjs` | Not a test — prints parsed rows verbatim with their PDF page, for checking output against the source by eye |
 | `e2e/app.spec.js` | The actual app: upload → parse → filter → download all three formats |
 
@@ -140,12 +173,13 @@ npx playwright install chromium
 ```
 
 The parser fixtures are real Nexis exports, which are copyrighted news content
-and therefore **not committed** (`tests/` is gitignored). Any fixture that is
-missing is skipped with a notice instead of failing, so `npm test` passes on a
-fresh clone — it just verifies less:
+and therefore **not committed** (`tests/` and `fixtures/` are both gitignored).
+Any fixture that is missing is skipped with a notice instead of failing, so
+`npm test` passes on a fresh clone — it just verifies less:
 
 ```
 SKIP  nytimes-2026-07-06.PDF (not present in tests/)
+SKIP  nexis-pdf-zip-with-biblio.ZIP (not present in fixtures/)
 ```
 
 To get real coverage, put your own Nexis exports in `tests/` and add them to the
@@ -153,6 +187,12 @@ To get real coverage, put your own Nexis exports in `tests/` and add them to the
 should produce. `e2e/app.spec.js` skips its import tests the same way, and points
 at `tests/nytimes-2026-07-06.PDF` by default — change `FIXTURE` and
 `FIXTURE_ARTICLES` there to use your own.
+
+The export-matrix suites (`scripts/test-delivery.mjs`,
+`e2e/permutations.spec.js`) look in `fixtures/` instead, for the same reason —
+the same set of articles exported all eight ways (PDF/DOCX × single file/ZIP ×
+bibliography on/off), named `nexis-{pdf,docx}-{singlefile,zip}-{with,without}-biblio`.
+Both suites skip whichever combination is absent.
 
 CI (`.github/workflows/ci.yml`) runs both suites on every push and pull request.
 Since fixtures are not in the repo, CI verifies the sanitizer, the UI structure,
@@ -163,7 +203,9 @@ the empty state, and that every wired-up element exists.
 ```
 src/
   main.js            entry point: state, import pipeline, event wiring
-  parser.js          Nexis PDF text -> article rows  (see docs/parsing.md)
+  parser.js          Nexis text -> article rows      (see docs/parsing.md)
+  delivery.js        Export-matrix routing; bibliography companions
+  docx-text.js       DOCX -> page entries (same contract as pdf-text.js)
   pdf.js             pdf.js setup + Web Worker
   pdf-text.js        page -> text, shared by the app and the tests
   database.js        SQLite / XLSX / CSV export

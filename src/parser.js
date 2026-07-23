@@ -41,15 +41,17 @@ function detectDocumentType(text) {
   return "";
 }
 
-export function parseNexisPdfText(text, source = {}, pageData = null) {
+export function parseNexisPdfText(text, source = {}, pageData = null, options = {}) {
   const pages = Array.isArray(pageData) ? pageData : null;
   const pageEntries = buildPageEntries(text, pages);
-  const header = parseDeliveryHeader(pageEntries[0]?.text || "");
+  // A ZIP of individually exported files has no delivery header of its own; the
+  // doclist that ships beside it does, and the caller passes it in here.
+  const header = { ...parseDeliveryHeader(options.headerText ?? pageEntries[0]?.text ?? "") };
   const articles = [];
   let currentArticle = null;
 
   for (const page of pageEntries) {
-    if (isArticleStartPage(page.text)) {
+    if (isArticleStartPage(page)) {
       if (currentArticle) articles.push(currentArticle);
       currentArticle = { pages: [page] };
     } else if (currentArticle) {
@@ -65,6 +67,45 @@ export function parseNexisPdfText(text, source = {}, pageData = null) {
   if (currentArticle) articles.push(currentArticle);
 
   return articles.map((article, index) => parseArticle(article, index + 1, header, source));
+}
+
+// Nexis's "include bibliography" option adds two companion files beside the
+// articles, in whichever format was chosen. Neither contains articles, and both
+// used to parse to zero rows with no explanation. Classified by content rather
+// than filename, because users rename downloads.
+//
+//   articles      -- the real export
+//   bibliography  -- "mergedFile_*": one citation per document, each on its own
+//                    page under a "Bibliography" heading
+//   doclist       -- "Files (N)_doclist": search provenance and numbered titles
+export function classifyDeliveryText(text) {
+  const value = String(text || "");
+  if (!value.trim()) return "empty";
+  if (/^Page\s+1\s+of\s+\d+/im.test(value) && detectDocumentType(value) !== "") return "articles";
+  if (/^\s*Bibliography\s*$/im.test(value)) return "bibliography";
+  if (/^\s*Documents\s*\(\d+\)\s*$/im.test(value) && /^\s*Search Terms:/im.test(value)) return "doclist";
+  return "unknown";
+}
+
+// The numbered title list from a doclist. Titles wrap across lines, and a
+// continuation line is any line that does not itself start a new entry.
+export function parseDoclistTitles(text) {
+  const titles = [];
+  for (const raw of String(text || "").split(/\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const match = /^(\d+)\.\s+(.*\S)$/.exec(line);
+    if (match) {
+      titles.push({ number: Number(match[1]), title: match[2] });
+      continue;
+    }
+    if (PAGE_HEADER_RE.test(line) || FOOTER_RE.test(line)) continue;
+    if (titles.length && !/^(?:Content Type|Narrowed by|Client\/Matter|Search |User Name|Date and Time|Job Number|Documents\s*\()/i.test(line)) {
+      const last = titles[titles.length - 1];
+      last.title = `${last.title} ${line}`;
+    }
+  }
+  return titles;
 }
 
 export function parseDeliveryHeader(text) {
@@ -92,7 +133,9 @@ function parseArticle(article, ordinal, header, source) {
   const firstPageLines = cleanArticleLines(firstPage.text.split(/\n/));
   const documentType = detectDocumentType(chunk) || "news";
 
-  const title = extractTitle(firstPageLines, firstPage.annotations);
+  // DOCX marks the title with a Heading1 style; the PDF can only recover it from
+  // link annotations, so that heuristic runs only when nothing was handed over.
+  const title = compact(firstPage.title || "") || extractTitle(firstPageLines, firstPage.annotations);
   const context = { title, ordinal, pdfName: source.pdfName };
   const parsed =
     documentType === "case" ? parseCaseDocument(lines, context) : parseNewsDocument(lines, context);
@@ -440,7 +483,11 @@ function buildPageEntries(text, pages) {
     return pages.map((page, index) => ({
       pageNumber: page.pageNumber ?? index + 1,
       text: normalizeText(page.text || ""),
-      annotations: Array.isArray(page.annotations) ? page.annotations : []
+      annotations: Array.isArray(page.annotations) ? page.annotations : [],
+      // Readers that segment documents themselves (src/docx-text.js) say so
+      // rather than relying on the PDF's "Page 1 of N" furniture.
+      articleStart: page.articleStart === true,
+      title: page.title || ""
     }));
   }
 
@@ -453,8 +500,9 @@ function buildPageEntries(text, pages) {
     }));
 }
 
-function isArticleStartPage(text) {
-  return /^Page\s+1\s+of\s+\d+/im.test(text) && detectDocumentType(text) !== "";
+function isArticleStartPage(page) {
+  if (page.articleStart) return true;
+  return /^Page\s+1\s+of\s+\d+/im.test(page.text) && detectDocumentType(page.text) !== "";
 }
 
 function extractTitle(lines, annotations) {

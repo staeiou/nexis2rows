@@ -1,4 +1,4 @@
-# How the parser reads a Nexis PDF
+# How the parser reads a Nexis export
 
 Everything here describes `src/parser.js`. If you are changing that file, read
 this first — most of it is the record of a specific layout quirk that broke a
@@ -31,15 +31,107 @@ End of Document
 
 The pipeline is:
 
-1. `src/pdf-text.js` turns each PDF page into text, grouping positioned runs into
-   lines by baseline. The app and the test harness both use it, so tests see
-   exactly the text the app sees.
+1. A **reader** turns the source file into page entries — `{ pageNumber, text,
+   annotations }`. `src/pdf-text.js` does this for PDF, grouping positioned runs
+   into lines by baseline; `src/docx-text.js` does it for DOCX. The app and the
+   test harness both use them, so tests see exactly the text the app sees.
 2. `parseNexisPdfText` splits pages into articles. A page starts an article if it
    matches `Page 1 of N` **and** carries a document-type marker (`Body` or
    `Reporter`); an article ends at `End of Document`.
 3. `parseArticle` detects the document type, then dispatches to
    `parseNewsDocument` or `parseCaseDocument`, which locate anchors in the
    article's lines and slice fields out between them.
+
+Only step 1 knows which format it was handed. Everything after it is shared.
+
+## The export matrix
+
+Nexis can hand you any combination of PDF/DOCX, one combined file or a ZIP of
+individual files, and bibliography on or off. `src/delivery.js` routes all of
+them; `scripts/test-delivery.mjs` covers the matrix.
+
+### Reading DOCX (`src/docx-text.js`)
+
+A DOCX has no pages — Word paginates at render time — so a "page entry" there is
+one *document's* worth of text. That is the better unit anyway: the PDF's page
+breaks are what causes running-head splicing (below), and DOCX marks its
+documents explicitly instead.
+
+- An article starts at a `Heading1` paragraph and ends at `End of Document`.
+  Both markers are present in every variant observed — combined exports 250/250,
+  50/50 and 38/38, individually exported files 1/1 — so neither is inferred.
+  Anything above the first `Heading1` is the delivery header.
+- Because there is no `Page 1 of N` to key off, the reader sets `articleStart` on
+  each entry and `isArticleStartPage` honours it. Without that, a DOCX would
+  parse to zero rows — the same silent-zero failure the court-case export hit.
+- The `Heading1` text becomes the title directly. The PDF path can only recover a
+  title from link annotations, so that heuristic runs **only** when no title was
+  handed over.
+- **Do not use bold to find structure.** 100% of paragraphs are bold in every
+  Nexis DOCX measured (5,759/5,759; 8,299/8,299; 5,417/5,417). It discriminates
+  nothing.
+- Nexis splits `<w:t>` runs around search-term hits, so run boundaries carry no
+  meaning for the text and are simply concatenated. See the known gap below.
+
+### The bibliography companions
+
+"Include bibliography" means something different depending on packaging — it is
+not a single, uniform toggle.
+
+**A ZIP of individually exported files always carries a manifest**,
+`Files (N)_doclist` — delivery header, then documents numbered `1..N` — whether
+or not "include bibliography" is on. That toggle only adds a *second* file: one
+citation per document, each under its own `Bibliography` heading. Its filename
+is not stable (`mergedFile_*` in one export, `Bibliography.PDF`/`.DOCX` in
+another observed later), so `classifyDeliveryText` (PDF) and
+`classifyDocxParagraphs` (DOCX) identify both companions **by content, not
+filename**. Neither holds articles, and both used to parse to zero rows with no
+explanation. They are not turned into rows. Instead:
+
+- The doclist supplies `search_terms`, `job_number`, `delivery_date`, and
+  `search_type`. This matters most for a ZIP of individually exported files,
+  which carries no delivery header of its own — without the doclist those four
+  columns are blank for every row. It does this regardless of whether the
+  citations file also shipped.
+- `reconcileTitles` compares the listed titles against what actually parsed and
+  the import log reports "N of M listed documents parsed", so a short import is
+  visible rather than silent. Titles are matched on alphanumerics only, and a
+  prefix counts as a match, because a title taken from a filename has had `:`
+  replaced and may be truncated.
+- When the citations file is also present, the doclist numbers it as its own
+  last entry, so an export of N documents lists N+1. `dropBibliographySelfEntry`
+  drops that entry only when it is present and last, so a doclist without a
+  citations file lists exactly N, and an article genuinely titled
+  "Bibliography" is still counted.
+
+**A combined single-file export has no second file to add.** With "include
+bibliography" on, Nexis instead prepends the entire bibliography — every
+citation under its own `Bibliography` heading, plus the same numbered title
+list — directly ahead of the articles, inside the one file. Everything before
+the first article is read as one opaque delivery header, so this block is
+**currently discarded**: `readDocxDelivery` / `readPdfDelivery` return
+`titles: []` and `citations: []` for this shape, and none of it reaches
+`reconcileTitles`. The articles themselves are unaffected — parsed correctly,
+provenance filled directly from the header, nothing leaks into a body — only
+the bibliography's own content and the "documents listed" check are silently
+unavailable. Confirmed on real fixtures in `scripts/test-delivery.mjs`; open
+gap, not fixed there. Choosing "each document in its own file" avoids it, since
+a ZIP's doclist is a separate file and is always read.
+
+### Known gap: lost spaces in DOCX
+
+Measured on the same 250 news documents exported in both formats: 238/250 differ
+only by the token `page`, from the PDF's `Page N of M` furniture. In the
+remainder, DOCX drops a space the PDF has at **7 points across 250 documents**
+— `"the duo behindBanned Book"`, `"shared the filmsthat they think"`,
+`"Probable startersvs. San Diego"`.
+
+Every one sits at a `<w:t>` run boundary, and there are only 14 letter-joining
+boundaries in 38,204 total, so the boundary is a precise signal. It is **not**
+currently repaired, because 4 of those 14 mark text that is glued in the PDF too
+(`"career pathwas"`, `"Epaminondasand Iphicrates"`) — an upstream defect, where
+inserting a space would corrupt rather than fix. Deciding between the two cases
+needs a rule that does not exist yet.
 
 ## Document types
 

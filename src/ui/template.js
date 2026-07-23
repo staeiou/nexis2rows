@@ -19,7 +19,7 @@ export const APP_HTML = `
             </button>
             <div id="titleMenu" class="title-menu-panel" hidden></div>
           </div>
-          <p>Convert Nexis Uni PDF exports, whether uploaded as bare PDFs or ZIP files, into local tabular files. Runs 100% locally inside your browser, we never see your files.</p>
+          <p>Convert Nexis Uni exports into local tabular files. PDF or DOCX, a single file or a ZIP, with or without the bibliography. Runs 100% locally inside your browser, we never see your files.</p>
         </div>
         <div class="actions">
           <button id="downloadSqlite" class="primary" disabled>Download SQLite</button>
@@ -29,14 +29,22 @@ export const APP_HTML = `
       </header>
 
       <label id="dropzone" class="dropzone">
-        <input id="fileInput" type="file" accept=".zip,.pdf,application/pdf,application/zip" multiple />
-        <span class="drop-title">Drop Nexis Uni PDFs or ZIPs</span>
-        <span class="drop-subtitle">Add bare PDFs or ZIPs of PDFs. You can re-order and remove files after.</span>
+        <input id="fileInput" type="file" accept=".zip,.pdf,.docx,application/pdf,application/zip,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple />
+        <span class="drop-title">Drop Nexis Uni PDFs, DOCX files, or ZIPs</span>
+        <span class="drop-subtitle">Any Nexis export: PDF or DOCX, bare or zipped. You can re-order and remove files after.</span>
       </label>
+
+      <p class="export-tip">
+        <strong>For best results</strong>, download from Nexis with:
+        <strong>full documents</strong>, <strong>include bibliography</strong>,
+        file type <strong>DOCX</strong>, and
+        <strong>save as individual files (.ZIP)</strong>.
+        Other combinations all work &mdash; this one just carries the most structure.
+      </p>
 
       <section id="pendingPanel" class="panel pending-panel" hidden>
         <div class="panel-head">
-          <h2>Pending PDFs</h2>
+          <h2>Pending files</h2>
           <div class="pending-actions">
             <button id="clearPending" class="ghost" disabled>Clear pending</button>
             <button id="importPending" class="primary" disabled>Import in this order</button>
@@ -62,7 +70,7 @@ export const APP_HTML = `
         </div>
         <div>
           <span class="metric" id="fileCount">0</span>
-          <span class="label">PDFs parsed</span>
+          <span class="label">Files parsed</span>
         </div>
         <div>
           <span class="metric" id="jobCount">0</span>

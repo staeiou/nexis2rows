@@ -202,7 +202,11 @@ async function parseFixture(path, pdfName) {
   const pdf = await pdfjsLib.getDocument({
     data: new Uint8Array(fs.readFileSync(path)),
     disableWorker: true,
-    standardFontDataUrl: new URL("../node_modules/pdfjs-dist/standard_fonts/", import.meta.url).href
+    // pdf.js ships standard_fonts as .pfb but asks for .ttf, so it warns once per
+    // font per file. Text extraction does not use glyph data, so the warnings are
+    // noise that buries real output; ERRORS-only keeps genuine failures visible.
+    standardFontDataUrl: new URL("../node_modules/pdfjs-dist/standard_fonts/", import.meta.url).href,
+    verbosity: pdfjsLib.VerbosityLevel.ERRORS
   }).promise;
 
   const pages = await readPages(pdf);

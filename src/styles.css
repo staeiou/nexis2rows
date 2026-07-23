@@ -489,3 +489,12 @@ tbody tr:hover {
     justify-self: start;
   }
 }
+
+/* The recommended-export hint under the dropzone. Advice, not a warning: it
+   should read as quieter than the dropzone it follows. */
+.export-tip {
+  margin: 0.75rem 0 0;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  opacity: 0.8;
+}

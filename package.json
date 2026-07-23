@@ -6,7 +6,7 @@
     "dev": "vite --host 127.0.0.1 --port 3000",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1 --port 3000",
-    "test": "node scripts/test-xml-sanitize.mjs && node scripts/test-ui.mjs && node scripts/test-parser.mjs",
+    "test": "node scripts/test-xml-sanitize.mjs && node scripts/test-ui.mjs && node scripts/test-parser.mjs && node scripts/test-delivery.mjs",
     "test:e2e": "playwright test",
     "test:all": "npm test && npm run test:e2e"
   },
