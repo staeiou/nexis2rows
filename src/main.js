@@ -26,6 +26,7 @@ const CURRENT_SITE_NAME = "nexis2rows";
 
 const state = {
   imports: [],
+  sourceHashes: new Set(),
   articles: [],
   pendingFiles: [],
   busy: false
@@ -52,6 +53,7 @@ elements.dropzone.addEventListener("drop", (event) => {
 elements.filterInput.addEventListener("input", renderArticles);
 elements.clearAll.addEventListener("click", () => {
   state.imports = [];
+  state.sourceHashes.clear();
   state.articles = [];
   render();
 });
@@ -192,26 +194,30 @@ async function stageOne(file) {
 }
 
 async function importPendingFiles() {
-  const files = getPendingOrderFromDom().flatMap((item) => item.sources);
+  const imports = getPendingOrderFromDom();
   state.pendingFiles = [];
   render();
-  await importFiles(files);
+  await importFiles(imports);
 }
 
-async function importFiles(files) {
-  if (!files.length || state.busy) return;
+async function importFiles(imports) {
+  if (!imports.length || state.busy) return;
   setBusy(true, "Reading files...");
   setProgress("Reading selected files", 1);
   // Provenance found in a doclist, keyed by the archive it came from. Collected
   // as we go and applied at the end, so it does not matter whether the doclist
   // is read before or after the articles it describes.
   const deliveries = createDeliveryIndex();
+  const resultsByDeliveryKey = new Map();
+  const results = [];
   try {
-    for (let index = 0; index < files.length; index += 1) {
-      setProgress(`Reading ${files[index].name}`, Math.floor((index / files.length) * 10));
-      await importSource(files[index], deliveries);
+    for (let index = 0; index < imports.length; index += 1) {
+      setProgress(`Reading ${imports[index].name}`, Math.floor((index / imports.length) * 10));
+      results.push(await importStagedImport(imports[index], deliveries, resultsByDeliveryKey));
     }
-    applyDeliveryProvenance(deliveries);
+    applyDeliveryProvenance(deliveries, resultsByDeliveryKey);
+    for (const result of results) finalizeImportResult(result);
+    state.imports.push(...results);
     setProgress("Import complete", 100);
     hideProgressSoon();
   } catch (error) {
@@ -224,20 +230,61 @@ async function importFiles(files) {
   }
 }
 
+function createImportResult(staged) {
+  return {
+    name: staged.name,
+    kind: staged.kind,
+    sourceCount: staged.sources.length,
+    count: 0,
+    details: [],
+    errors: 0,
+    warnings: 0,
+    status: "ok"
+  };
+}
+
+async function importStagedImport(staged, deliveries, resultsByDeliveryKey) {
+  const result = createImportResult(staged);
+  for (const source of staged.sources) {
+    resultsByDeliveryKey.set(source.archiveName || source.pdfName, result);
+    try {
+      await importSource(source, deliveries, result);
+    } catch (error) {
+      console.error("import source error", error);
+      result.errors += 1;
+      result.details.push(describeError(error));
+    }
+  }
+  finalizeImportResult(result);
+  return result;
+}
+
+function finalizeImportResult(result) {
+  result.status = result.errors ? "error" : result.warnings ? "warn" : "ok";
+  result.detail = [
+    result.kind === "ZIP"
+      ? `${result.sourceCount.toLocaleString()} file${result.sourceCount === 1 ? "" : "s"} from ZIP`
+      : `Bare ${result.kind}`,
+    ...result.details
+  ].join(" · ");
+}
+
 // Reads one staged file in whichever format it arrived in, then routes it: a
 // real export is parsed into rows, a bibliography companion contributes
 // provenance instead. Both formats reduce to the same page entries, so
 // src/parser.js does not know or care which one it was handed.
-async function importSource(file, deliveries) {
+async function importSource(file, deliveries, result) {
   const { archiveName, pdfName, kind } = file;
   const bytes = await file.getBytes();
   const sourceHash = await sha256(bytes);
   const label = pdfName || archiveName;
 
-  if (state.imports.some((item) => item.sourceHash === sourceHash)) {
-    state.imports.push({ name: label, detail: `Skipped duplicate ${kind}`, count: 0, status: "warn", archiveName });
+  if (state.sourceHashes.has(sourceHash)) {
+    result.warnings += 1;
+    result.details.push(`Skipped duplicate ${kind}`);
     return;
   }
+  state.sourceHashes.add(sourceHash);
 
   updateLog(`Reading ${label}...`);
   setProgress(`Reading ${label}`, 10);
@@ -247,31 +294,17 @@ async function importSource(file, deliveries) {
 
   if (isCompanion(read.classification)) {
     recordDelivery(deliveries, deliveryKey, read);
-    state.imports.push({
-      name: label,
-      detail:
-        read.classification === "doclist"
-          ? `Bibliography: ${read.titles.length} document${read.titles.length === 1 ? "" : "s"} listed`
-          : `Bibliography: ${read.citations.length} citation${read.citations.length === 1 ? "" : "s"}`,
-      count: 0,
-      sourceHash,
-      status: "ok",
-      archiveName
-    });
-    render();
+    result.details.push(
+      read.classification === "doclist"
+        ? `Bibliography: ${read.titles.length} document${read.titles.length === 1 ? "" : "s"} listed`
+        : `Bibliography: ${read.citations.length} citation${read.citations.length === 1 ? "" : "s"}`
+    );
     return;
   }
 
   if (read.classification !== "articles") {
-    state.imports.push({
-      name: label,
-      detail: `No Nexis documents found in this ${kind}`,
-      count: 0,
-      sourceHash,
-      status: "error",
-      archiveName
-    });
-    render();
+    result.errors += 1;
+    result.details.push(`No Nexis documents found in this ${kind}`);
     return;
   }
 
@@ -289,15 +322,11 @@ async function importSource(file, deliveries) {
   }
 
   state.articles.push(...parsed);
-  state.imports.push({
-    name: label,
-    detail: pdfName,
-    count: parsed.length,
-    sourceHash,
-    status: parsed.length ? "ok" : "error",
-    archiveName
-  });
-  render();
+  result.count += parsed.length;
+  if (!parsed.length) {
+    result.errors += 1;
+    result.details.push(`No Nexis documents found in ${kind}`);
+  }
 }
 
 async function readPdfSource(bytes, label) {
@@ -312,7 +341,7 @@ async function readPdfSource(bytes, label) {
 
 // Report what the doclist expected against what actually parsed, so a partial
 // import is visible instead of being silently short.
-function applyDeliveryProvenance(deliveries) {
+function applyDeliveryProvenance(deliveries, resultsByDeliveryKey) {
   for (const [key, delivery] of deliveries) {
     const rows = state.articles.filter((article) => article.delivery_key === key);
     if (!rows.length) continue;
@@ -321,16 +350,14 @@ function applyDeliveryProvenance(deliveries) {
 
     if (delivery.titles.length) {
       const { listed, found, missing } = reconcileTitles(rows, delivery.titles);
-      state.imports.push({
-        name: key,
-        detail: `${found} of ${listed} listed documents parsed`,
-        count: rows.length,
-        status: missing.length ? "warn" : "ok"
-      });
+      const result = resultsByDeliveryKey.get(key);
+      if (result) {
+        result.details.push(`${found} of ${listed} listed documents parsed`);
+        if (missing.length) result.warnings += 1;
+      }
     }
   }
   for (const article of state.articles) delete article.delivery_key;
-  render();
 }
 
 function setBusy(busy, message = "") {

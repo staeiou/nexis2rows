@@ -130,6 +130,8 @@ test.describe("export matrix", () => {
     test(`a ZIP of individual ${format.toUpperCase()} files without the bibliography still restores provenance via the doclist`, async ({ page }) => {
       await importFiles(page, [FIXTURES[`${format}ZipWithout`]], DOCUMENTS);
 
+      await expect(page.locator(".log-row")).toHaveCount(1);
+      await expect(page.locator("#fileCount")).toHaveText("1");
       await expect(page.locator(".log-row.error")).toHaveCount(0);
       const log = page.locator(".log");
       await expect(log).toContainText(`Bibliography: ${DOCUMENTS} documents listed`);
@@ -147,6 +149,8 @@ test.describe("export matrix", () => {
     test(`a ZIP of individual ${format.toUpperCase()} files with the bibliography restores provenance and citations`, async ({ page }) => {
       await importFiles(page, [FIXTURES[`${format}ZipWith`]], DOCUMENTS);
 
+      await expect(page.locator(".log-row")).toHaveCount(1);
+      await expect(page.locator("#fileCount")).toHaveText("1");
       await expect(page.locator(".log-row.error")).toHaveCount(0);
       await expect(page.locator(".log-row.warn")).toHaveCount(0);
       const log = page.locator(".log");
