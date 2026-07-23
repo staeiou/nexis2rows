@@ -235,7 +235,7 @@ async function importSource(file, deliveries) {
   const label = pdfName || archiveName;
 
   if (state.imports.some((item) => item.sourceHash === sourceHash)) {
-    state.imports.push({ name: label, detail: `Skipped duplicate ${kind}`, count: 0, status: "warn" });
+    state.imports.push({ name: label, detail: `Skipped duplicate ${kind}`, count: 0, status: "warn", archiveName });
     return;
   }
 
@@ -255,7 +255,8 @@ async function importSource(file, deliveries) {
           : `Bibliography: ${read.citations.length} citation${read.citations.length === 1 ? "" : "s"}`,
       count: 0,
       sourceHash,
-      status: "ok"
+      status: "ok",
+      archiveName
     });
     render();
     return;
@@ -267,7 +268,8 @@ async function importSource(file, deliveries) {
       detail: `No Nexis documents found in this ${kind}`,
       count: 0,
       sourceHash,
-      status: "error"
+      status: "error",
+      archiveName
     });
     render();
     return;
@@ -292,7 +294,8 @@ async function importSource(file, deliveries) {
     detail: pdfName,
     count: parsed.length,
     sourceHash,
-    status: parsed.length ? "ok" : "error"
+    status: parsed.length ? "ok" : "error",
+    archiveName
   });
   render();
 }

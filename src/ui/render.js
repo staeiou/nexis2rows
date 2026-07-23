@@ -101,8 +101,9 @@ export function createRenderer({ elements, state }) {
       return;
     }
 
+    const imports = collapseArchiveImports(state.imports);
     elements.log.className = "log";
-    elements.log.innerHTML = state.imports
+    elements.log.innerHTML = imports
       .map(
         (item) => `
         <div class="log-row ${item.status}">
@@ -113,6 +114,40 @@ export function createRenderer({ elements, state }) {
       `
       )
       .join("");
+  }
+
+  // An archive can contain hundreds of documents. Keep its detailed import
+  // records for duplicate detection and accounting, but show one concise row
+  // in the completed-import log instead of every member filename.
+  function collapseArchiveImports(imports) {
+    const collapsed = [];
+    const archives = new Map();
+    for (const item of imports) {
+      if (!item.archiveName) {
+        collapsed.push(item);
+        continue;
+      }
+      const group = archives.get(item.archiveName);
+      if (group) {
+        group.items.push(item);
+      } else {
+        const next = { name: item.archiveName, archiveName: item.archiveName, items: [item] };
+        archives.set(item.archiveName, next);
+        collapsed.push(next);
+      }
+    }
+    return collapsed.map((item) => {
+      if (!item.items) return item;
+      const count = item.items.reduce((sum, member) => sum + member.count, 0);
+      const hasError = item.items.some((member) => member.status === "error");
+      const hasWarning = item.items.some((member) => member.status === "warn");
+      return {
+        name: item.name,
+        detail: `${item.items.length.toLocaleString()} file${item.items.length === 1 ? "" : "s"} from ZIP`,
+        count,
+        status: hasError ? "error" : hasWarning ? "warn" : "ok"
+      };
+    });
   }
 
   function renderArticles() {
