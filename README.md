@@ -26,7 +26,7 @@ Or run it locally — see [Development](#development).
    - **Separate documents in one file** (a single combined export) or
      **each document in its own file** (a ZIP)
    - **Include bibliography** on or off
-4. Drop the result onto nexis2rows. A `.zip` is expanded into a pending list you
+4. Drop the result onto nexis2rows. Each `.zip` stays as one pending import you
    can reorder before importing.
 
 **Prefer DOCX if you have the choice.** A PDF repeats a `Page N of M` running

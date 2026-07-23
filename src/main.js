@@ -106,8 +106,9 @@ if ("serviceWorker" in navigator) {
 
 render();
 
-// Uploads are staged first so the user can reorder or drop files before the
-// expensive parse; importFiles is what actually reads and parses them.
+// Uploads are staged first so the user can reorder or drop imports before the
+// expensive parse. A ZIP stays one staged import even though it may contain
+// many source files; it is expanded only after the user chooses its position.
 async function stageFiles(files) {
   if (!files.length || state.busy) return;
   setBusy(true, "Reading selected files...");
@@ -151,17 +152,20 @@ async function stageOne(file) {
       return;
     }
 
-    for (const entry of entries) {
-      state.pendingFiles.push({
-        id: pendingId++,
+    state.pendingFiles.push({
+      id: pendingId++,
+      name: file.name,
+      detail: `${entries.length.toLocaleString()} file${entries.length === 1 ? "" : "s"} in ZIP`,
+      kind: "ZIP",
+      sources: entries.map((entry) => ({
         name: file.name,
         detail: entry.name,
         kind: sourceKind(entry.name),
         archiveName: file.name,
         pdfName: entry.name,
         getBytes: () => entry.async("uint8array")
-      });
-    }
+      }))
+    });
     return;
   }
 
@@ -172,9 +176,14 @@ async function stageOne(file) {
       name: file.name,
       detail: `Bare ${kind}`,
       kind,
-      archiveName: "",
-      pdfName: file.name,
-      getBytes: async () => new Uint8Array(await file.arrayBuffer())
+      sources: [{
+        name: file.name,
+        detail: `Bare ${kind}`,
+        kind,
+        archiveName: "",
+        pdfName: file.name,
+        getBytes: async () => new Uint8Array(await file.arrayBuffer())
+      }]
     });
     return;
   }
@@ -183,7 +192,7 @@ async function stageOne(file) {
 }
 
 async function importPendingFiles() {
-  const files = getPendingOrderFromDom();
+  const files = getPendingOrderFromDom().flatMap((item) => item.sources);
   state.pendingFiles = [];
   render();
   await importFiles(files);

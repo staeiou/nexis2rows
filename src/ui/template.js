@@ -44,7 +44,7 @@ export const APP_HTML = `
 
       <section id="pendingPanel" class="panel pending-panel" hidden>
         <div class="panel-head">
-          <h2>Pending files</h2>
+          <h2>Pending imports</h2>
           <div class="pending-actions">
             <button id="clearPending" class="ghost" disabled>Clear pending</button>
             <button id="importPending" class="primary" disabled>Import in this order</button>
